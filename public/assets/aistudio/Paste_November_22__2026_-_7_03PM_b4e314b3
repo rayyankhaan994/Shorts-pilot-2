@@ -1,0 +1,1187 @@
+# MASTER PROMPT — BUILD SHORTSPILOT FROM SCRATCH
+
+Act as a senior full-stack developer, software architect, DevOps engineer, Firebase specialist, and YouTube Data API integration expert.
+
+Build a complete, production-ready SaaS application called **ShortsPilot** from scratch.
+
+This is a completely NEW project.
+
+Do not reuse the old application's Firebase project, GitHub repository, Render service, database, or OAuth configuration.
+
+Create a clean architecture with a new GitHub repository, a new Firebase project, and a new Render deployment.
+
+The application must be fully functional, secure, responsive, and ready for production.
+
+Do not build just a UI prototype. Implement real authentication, persistent storage, real YouTube OAuth, video uploads, scheduling, and publishing.
+
+---
+
+# 1. PROJECT OBJECTIVE
+
+ShortsPilot is a YouTube Shorts automation SaaS.
+
+Its primary purpose is to let users upload multiple different videos and automatically publish six YouTube Shorts every day to their connected YouTube channels.
+
+The application must:
+
+1. Allow users to register and log in.
+2. Connect a real YouTube channel using Google OAuth 2.0.
+3. Upload multiple Shorts videos in bulk.
+4. Apply the same default title, description, and hashtags to every video.
+5. Maintain six upcoming scheduled Shorts.
+6. Automatically schedule replacement videos when scheduled Shorts are successfully published.
+7. Publish videos automatically using the official YouTube Data API v3.
+8. Store all data persistently in Firebase.
+9. Continue operating when users close their browser or shut down their computers.
+10. Display publishing history, queue status, and errors.
+
+The videos must remain different. Their metadata should remain identical unless a user explicitly overrides individual video metadata.
+
+---
+
+# 2. NEW PROJECT AND TECHNOLOGY STACK
+
+Create the application using:
+
+Frontend:
+- Next.js
+- TypeScript
+- Tailwind CSS
+- shadcn/ui
+- Lucide icons
+
+Backend:
+- Next.js API routes
+- Server-side TypeScript
+- Firebase Admin SDK
+
+Authentication:
+- Firebase Authentication
+
+Database:
+- Firebase Firestore
+
+Video storage:
+- Firebase Cloud Storage
+
+YouTube integration:
+- YouTube Data API v3
+- Google OAuth 2.0
+
+Deployment:
+- GitHub for source control
+- Render for hosting the Next.js application
+- Render Cron Jobs for automatic background scheduling
+
+Use a cloud-based scheduler, not a browser-based scheduler.
+
+The backend must continue working without an open browser, active user session, or running laptop.
+
+Use the simplest reliable architecture compatible with these services.
+
+Do not require Google Cloud Scheduler or a separately managed Google Cloud Run service.
+
+Use a Render Cron Job that securely calls a protected backend endpoint at a one-minute interval, where supported by the selected Render plan.
+
+Do not use setInterval as the primary production scheduler.
+
+Do not depend on an in-memory queue.
+
+---
+
+# 3. PROJECT STRUCTURE
+
+Create a clean, modular project structure.
+
+Suggested structure:
+
+shortspilot/
+- src/
+  - app/
+    - dashboard/
+    - videos/
+    - upload/
+    - queue/
+    - calendar/
+    - automation/
+    - youtube/
+    - settings/
+    - api/
+      - auth/
+      - youtube/
+      - videos/
+      - queue/
+      - scheduler/
+      - automation/
+  - components/
+  - lib/
+    - firebase/
+    - youtube/
+    - storage/
+    - scheduler/
+    - security/
+    - validation/
+  - services/
+    - video.service.ts
+    - queue.service.ts
+    - publishing.service.ts
+    - youtube.service.ts
+    - scheduler.service.ts
+  - types/
+  - hooks/
+- scripts/
+- firestore.rules
+- firestore.indexes.json
+- storage.rules
+- .env.example
+- README.md
+- package.json
+
+You can improve this structure if necessary.
+
+Keep frontend, backend, database, storage, and integrations separated.
+
+---
+
+# 4. AUTHENTICATION
+
+Implement real Firebase Authentication.
+
+Features:
+- Email and password registration.
+- Login.
+- Logout.
+- Password reset.
+- Protected dashboard.
+- Persistent authentication.
+- User-specific data.
+
+Each user must only access their own videos, YouTube connection, metadata, settings, publishing jobs, and publishing history.
+
+Use Firebase security rules and server-side authorization.
+
+Never trust a user ID supplied by the browser without verifying the authenticated session.
+
+---
+
+# 5. YOUTUBE CHANNEL CONNECTION
+
+Implement real Google OAuth 2.0.
+
+Use the required YouTube permissions, including:
+
+https://www.googleapis.com/auth/youtube.upload
+
+Request additional scopes only when necessary.
+
+Features:
+- Connect YouTube Channel.
+- Google OAuth consent screen.
+- OAuth callback.
+- Retrieve actual channel information.
+- Display channel name.
+- Display channel profile image.
+- Display channel ID.
+- Display connection status.
+- Disconnect YouTube Channel.
+- Refresh expired access tokens.
+
+Store OAuth refresh tokens securely on the backend.
+
+Encrypt tokens using authenticated encryption such as AES-256-GCM.
+
+Never store OAuth refresh tokens in:
+- localStorage
+- sessionStorage
+- frontend JavaScript
+- public Firestore documents
+
+Use encrypted persistent server-side storage.
+
+Keep each user's YouTube connection separate.
+
+Implement token refresh without requiring the user to reconnect frequently.
+
+Never simulate a successful YouTube connection.
+
+---
+
+# 6. DASHBOARD DESIGN
+
+Build a beautiful, modern SaaS dashboard.
+
+Design:
+- Premium dark theme.
+- Professional typography.
+- Responsive desktop and mobile layouts.
+- Sidebar navigation.
+- Clean cards.
+- Modern tables.
+- Status indicators.
+- Smooth interactions.
+- Loading states.
+- Empty states.
+- Error notifications.
+
+Sidebar:
+
+1. Dashboard
+2. Video Library
+3. Upload Videos
+4. Publishing Queue
+5. Publishing Calendar
+6. Automation Settings
+7. YouTube Channel
+8. Settings
+
+Dashboard overview cards:
+
+- Total uploaded videos.
+- Videos waiting.
+- Videos scheduled.
+- Videos published.
+- Failed videos.
+- Upcoming queue count.
+
+Additional dashboard sections:
+
+- Connected YouTube channel.
+- Next scheduled Short.
+- Today's publishing progress.
+- Recent publishing activity.
+- Upcoming six Shorts.
+- Automation status.
+- Queue refill status.
+
+All displayed statistics must come from real Firebase data.
+
+Do not use fake production data.
+
+---
+
+# 7. BULK VIDEO UPLOAD
+
+Implement a real bulk video upload system.
+
+Users must be able to:
+
+- Select multiple MP4 files.
+- Drag and drop videos.
+- Upload multiple videos.
+- See individual upload progress.
+- Preview videos.
+- Remove videos before scheduling.
+- View filenames.
+- View video durations.
+- See upload errors.
+- Retry failed storage uploads.
+
+Validate:
+- File type.
+- File size.
+- Video format.
+- Upload completion.
+
+Use Firebase Cloud Storage for persistent video storage.
+
+Do not rely on Cloud Run or Render temporary local disk.
+
+Store uploaded video files in user-specific storage paths.
+
+Example:
+
+users/{userId}/videos/{videoId}/original.mp4
+
+Use resumable uploads where possible.
+
+Only add a video to the publishing queue after its storage upload is confirmed successful.
+
+---
+
+# 8. DEFAULT METADATA
+
+Create a Default Metadata Settings page.
+
+Fields:
+
+Default Title:
+Wait Until You See This 😱 #shorts
+
+Default Description:
+Amazing videos every day!
+
+Default Hashtags:
+#shorts #viral #trending #facts
+
+Users can edit these values.
+
+Apply the same metadata to every newly uploaded video automatically.
+
+Provide:
+- Save Defaults.
+- Apply Defaults.
+- Individual video metadata overrides.
+
+When defaults change, ask whether to apply changes to:
+
+1. New videos only.
+2. All unpublished videos.
+
+Never automatically change metadata on videos already published or already scheduled on YouTube.
+
+When scheduling a video, combine its hashtags with the description correctly and preserve YouTube metadata length limits.
+
+---
+
+# 9. AUTOMATIC SIX-SHORTS SCHEDULER
+
+This is the most important feature.
+
+The application must maintain six upcoming scheduled YouTube Shorts.
+
+Default timezone:
+
+Asia/Kolkata
+
+Default publishing times:
+
+1. 9:00 AM
+2. 12:00 PM
+3. 3:00 PM
+4. 6:00 PM
+5. 9:00 PM
+6. 11:00 PM
+
+Allow users to modify these six time slots.
+
+Allow timezone customization.
+
+The scheduler must:
+
+1. Read the user's publishing settings from Firestore.
+2. Check the existing YouTube scheduled videos.
+3. Check the persistent publishing queue.
+4. Count upcoming scheduled Shorts.
+5. Calculate available publishing slots.
+6. Find the next eligible waiting video.
+7. Assign the next available slot.
+8. Upload it to YouTube as private.
+9. Set the correct future publishAt timestamp.
+10. Store the returned YouTube video ID.
+11. Mark the video as Scheduled only after YouTube confirms the upload.
+12. Continue until six upcoming Shorts are scheduled, provided enough waiting videos are available.
+
+Never schedule a video twice.
+
+Never create duplicate publishing jobs.
+
+Use Firestore transactions, atomic claims, or distributed locks to prevent concurrent scheduler executions from processing the same video.
+
+Respect the user's timezone and existing schedule.
+
+Do not move, delete, or reschedule videos already scheduled on YouTube simply to refill the queue.
+
+If fewer than six waiting videos are available, schedule whatever is available and display the remaining shortage.
+
+---
+
+# 10. ROLLING QUEUE AUTOMATION
+
+Implement an automatic rolling queue.
+
+The target is always six upcoming scheduled Shorts.
+
+Example:
+
+Initially:
+
+1. Video A — Scheduled
+2. Video B — Scheduled
+3. Video C — Scheduled
+4. Video D — Scheduled
+5. Video E — Scheduled
+6. Video F — Scheduled
+
+When Video A successfully publishes:
+
+- Mark Video A as Published.
+- Save its publishing history.
+- Remove it from the upcoming queue.
+- Schedule Video G into the next available publishing slot.
+- Restore the upcoming queue to six videos.
+
+Continue this process automatically.
+
+Important rules:
+
+- Never delete published history.
+- Never delete a video from the YouTube channel.
+- Never delete local video storage before successful YouTube confirmation.
+- Never mark a failed upload as Published.
+- Never remove a failed video from the queue without an explicit user action.
+- Never duplicate a YouTube upload.
+- Never change the metadata of an already scheduled YouTube video automatically.
+
+If the waiting queue is empty:
+
+Display:
+
+"Your upcoming queue is not full. Upload more videos to maintain six scheduled Shorts."
+
+Keep the existing scheduled videos untouched.
+
+---
+
+# 11. CLOUD-BASED BACKGROUND SCHEDULER
+
+The application must operate even when:
+
+- The browser is closed.
+- The user logs out.
+- The laptop is switched off.
+- The frontend is not running.
+
+Use Render Cron Jobs.
+
+Create a protected backend endpoint:
+
+POST /api/scheduler/run
+
+Create another endpoint if needed:
+
+POST /api/scheduler/refill
+
+Use CRON_SECRET authentication.
+
+The Render Cron Job must call the scheduler endpoint every minute.
+
+The scheduler must:
+- Authenticate the cron request.
+- Check active user accounts.
+- Check automation settings.
+- Check due publishing jobs.
+- Process eligible jobs.
+- Refill upcoming queues.
+- Refresh YouTube access tokens when needed.
+- Handle errors and retries.
+- Persist all state in Firestore.
+
+The cron job must not rely on in-memory state.
+
+Do not create an unnecessary Google Cloud service account.
+
+Do not require Google Cloud Scheduler.
+
+Do not create a frontend timer as a replacement.
+
+Do not claim that a cron job is active unless its configuration and execution have been verified.
+
+Explain any Render plan limitations or required paid features.
+
+---
+
+# 12. YOUTUBE PUBLISHING
+
+Use the official YouTube Data API v3.
+
+Use:
+
+videos.insert
+
+Implement resumable video uploads.
+
+For scheduled publication:
+- Upload video with privacyStatus set to private.
+- Set publishAt to a valid future ISO 8601 timestamp.
+- Ensure the required privacy settings are valid.
+- Store the returned YouTube video ID.
+- Store the scheduled timestamp.
+- Mark the database record Scheduled only after successful API confirmation.
+
+Implement:
+- OAuth token refresh.
+- Upload progress.
+- Retry logic.
+- Exponential backoff.
+- API quota handling.
+- Network failure handling.
+- Invalid metadata handling.
+- Invalid file handling.
+- Duplicate prevention.
+- Idempotent publishing jobs.
+
+IMPORTANT:
+
+A successful videos.insert response does not mean a video has already been published publicly.
+
+Only mark a video Published after confirming that YouTube reports its publication as successful.
+
+Use YouTube's actual publication status and available API information.
+
+If YouTube API restrictions prevent public publishing, display a clear warning.
+
+Explain that Google may restrict uploads to private visibility until the required YouTube API compliance audit is completed.
+
+Also explain that YouTube determines Shorts eligibility based on its current format and duration requirements.
+
+---
+
+# 13. VIDEO QUEUE
+
+Create a fully functional Publishing Queue page.
+
+Statuses:
+
+- Uploaded
+- Waiting
+- Processing
+- Scheduled
+- Published
+- Failed
+
+Features:
+
+- View upcoming six Shorts.
+- View waiting videos.
+- Reorder waiting videos.
+- Delete waiting videos.
+- Retry failed uploads.
+- Reschedule eligible videos.
+- Pause automation.
+- Resume automation.
+- View publishing errors.
+- View scheduled timestamps.
+- View YouTube video IDs.
+
+Never allow a failed upload to be represented as successfully published.
+
+Never delete a YouTube video when removing a local queue entry.
+
+---
+
+# 14. PUBLISHING CALENDAR
+
+Create a calendar page.
+
+Views:
+- Daily.
+- Weekly.
+- Monthly.
+
+Display:
+- Scheduled videos.
+- Published videos.
+- Publishing times.
+- Failed jobs.
+
+Allow users to:
+- View video details.
+- Reschedule eligible videos.
+- Move waiting videos to another date.
+- See completed publishing history.
+
+Never silently modify existing YouTube scheduled publication times.
+
+---
+
+# 15. FIRESTORE DATABASE
+
+Use Firebase Firestore as the persistent database.
+
+Create collections:
+
+users
+youtube_channels
+videos
+publishing_settings
+publishing_jobs
+publishing_history
+scheduler_locks
+notifications
+
+Suggested video document:
+
+{
+  userId,
+  storagePath,
+  filename,
+  title,
+  description,
+  hashtags,
+  duration,
+  thumbnailUrl,
+  youtubeVideoId,
+  scheduledAt,
+  publishedAt,
+  status,
+  errorMessage,
+  createdAt,
+  updatedAt
+}
+
+Suggested YouTube channel document:
+
+{
+  userId,
+  channelId,
+  channelName,
+  channelImage,
+  encryptedAccessToken,
+  encryptedRefreshToken,
+  tokenExpiry,
+  connectedAt
+}
+
+Suggested publishing settings:
+
+{
+  userId,
+  defaultTitle,
+  defaultDescription,
+  defaultHashtags,
+  timezone: "Asia/Kolkata",
+  dailyPublishingTimes: [
+    "09:00",
+    "12:00",
+    "15:00",
+    "18:00",
+    "21:00",
+    "23:00"
+  ],
+  dailyPublishingLimit: 6,
+  automationEnabled: true
+}
+
+Suggested publishing job:
+
+{
+  userId,
+  videoId,
+  scheduledAt,
+  youtubeVideoId,
+  status,
+  retryCount,
+  lastError,
+  idempotencyKey,
+  createdAt,
+  updatedAt
+}
+
+Add:
+- Proper document ownership.
+- Validation.
+- Firestore indexes.
+- Atomic operations.
+- Server-side access control.
+- Firestore security rules.
+
+Use firebase-admin for trusted backend operations.
+
+Do not expose Firebase Admin credentials in frontend code.
+
+Keep publishing history permanently unless the user explicitly requests deletion.
+
+---
+
+# 16. PERSISTENT VIDEO STORAGE AND CLEANUP
+
+All uploaded videos must be stored in Firebase Cloud Storage.
+
+Never use temporary application disk for permanent storage.
+
+After a video is successfully published:
+
+1. Verify YouTube publication.
+2. Mark the video Published.
+3. Save publishing history in Firestore.
+4. Remove it from the upcoming queue.
+5. Delete the original stored file only if the user has enabled automatic storage cleanup.
+
+Provide an option to keep published source videos.
+
+Never delete the YouTube video itself.
+
+If publishing fails, preserve the original stored file.
+
+---
+
+# 17. AUTOMATION SETTINGS
+
+Create a complete automation settings page.
+
+Controls:
+
+- Enable automation.
+- Pause automation.
+- Resume automation.
+- Daily publishing limit.
+- Six publishing time slots.
+- Timezone.
+- Default metadata.
+- Automatic retries.
+- Automatic storage cleanup.
+- Queue refill.
+
+Show clear statuses:
+
+- Automation Active.
+- Automation Paused.
+- Scheduler Error.
+- Queue Needs Videos.
+- YouTube Authentication Expired.
+
+Changes must persist in Firestore.
+
+---
+
+# 18. MANUAL QUEUE REFILL
+
+Add a prominent button:
+
+"Refill Queue Now"
+
+When clicked:
+
+1. Call the protected, authenticated backend endpoint.
+2. Check the current upcoming queue.
+3. Find available videos in the waiting list.
+4. Find the next valid publishing slots.
+5. Schedule missing videos.
+6. Update Firestore.
+7. Refresh the dashboard.
+
+Show:
+- Number of videos scheduled.
+- Current upcoming queue count.
+- Number of videos still needed.
+- Any errors.
+
+The button must perform a real backend operation.
+
+Also trigger a queue check when the user opens the dashboard.
+
+However, automatic queue maintenance must remain independent of the frontend.
+
+---
+
+# 19. NOTIFICATIONS
+
+Create real notifications for:
+
+- YouTube channel connected.
+- Video uploaded.
+- Video scheduled.
+- Video published.
+- Upload failed.
+- Queue empty.
+- Queue refilled.
+- Authentication expired.
+- API quota exhausted.
+- Automation paused.
+
+Store notifications in Firestore.
+
+Display notifications inside the dashboard.
+
+---
+
+# 20. SECURITY
+
+Implement:
+
+- Firebase Authentication.
+- Firestore security rules.
+- Firebase Storage security rules.
+- Secure OAuth callback validation.
+- OAuth state verification.
+- Encrypted refresh tokens.
+- Protected API endpoints.
+- CRON_SECRET verification.
+- Server-side YouTube API calls.
+- Input validation.
+- File validation.
+- Rate limiting.
+- Secure environment variables.
+- Ownership checks.
+- Idempotency protection.
+
+Never expose:
+- Google OAuth client secret.
+- OAuth refresh tokens.
+- Firebase Admin private keys.
+- CRON_SECRET.
+- Encryption keys.
+
+Never place private secrets in NEXT_PUBLIC environment variables.
+
+---
+
+# 21. ENVIRONMENT VARIABLES
+
+Create a complete .env.example.
+
+Include the required variable names, with no real secrets.
+
+Suggested variables:
+
+NEXT_PUBLIC_FIREBASE_API_KEY=
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=
+NEXT_PUBLIC_FIREBASE_PROJECT_ID=
+NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=
+NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=
+NEXT_PUBLIC_FIREBASE_APP_ID=
+
+FIREBASE_PROJECT_ID=
+FIREBASE_CLIENT_EMAIL=
+FIREBASE_PRIVATE_KEY=
+
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GOOGLE_REDIRECT_URI=
+
+TOKEN_ENCRYPTION_KEY=
+
+CRON_SECRET=
+
+APP_URL=
+
+YOUTUBE_API_KEY=
+
+Use only the variables actually needed by the final architecture.
+
+Do not duplicate Firebase configuration unnecessarily.
+
+Explain where each secret must be configured in Render.
+
+---
+
+# 22. GITHUB INTEGRATION
+
+Create a new GitHub repository named:
+
+shortspilot
+
+Requirements:
+
+- Create a clean new repository.
+- Commit the complete source code.
+- Include README.md.
+- Include .env.example.
+- Include Firestore rules.
+- Include Storage rules.
+- Include required deployment configuration.
+- Never commit .env or private credentials.
+- Keep the repository deployable through Render.
+
+Do not use or modify my old repository.
+
+If GitHub access is available, create and populate the repository directly after obtaining the required authorization.
+
+Otherwise, provide the exact files and steps to create it.
+
+---
+
+# 23. FIREBASE SETUP
+
+Use a completely new Firebase project.
+
+Explain how to:
+
+1. Create a Firebase project.
+2. Register a web application.
+3. Enable Firebase Authentication.
+4. Enable Firestore.
+5. Enable Firebase Storage.
+6. Deploy Firestore security rules.
+7. Deploy Storage security rules.
+8. Create the Firebase Admin credentials needed by the backend.
+9. Configure environment variables.
+
+Do not use my old Firebase project.
+
+Do not overwrite any existing project.
+
+Explain any Firebase billing requirements before enabling paid services.
+
+---
+
+# 24. RENDER DEPLOYMENT
+
+Deploy the application to Render.
+
+Create:
+
+1. A Render Web Service for the Next.js application.
+2. A Render Cron Job for background queue processing.
+
+The cron job must call:
+
+POST https://YOUR-APP-URL/api/scheduler/run
+
+It must run every minute where supported.
+
+Authenticate using CRON_SECRET.
+
+The application must be independent of the user's computer.
+
+Configure:
+- Build command.
+- Start command.
+- Environment variables.
+- Health check endpoint.
+- Cron schedule.
+- Production URL.
+- Error logging.
+
+Explain any required Render paid plan.
+
+Never claim that the scheduler works until an actual execution has been verified.
+
+---
+
+# 25. README AND DOCUMENTATION
+
+Create a complete README.md explaining:
+
+- Project architecture.
+- Installation.
+- Local development.
+- Firebase configuration.
+- Firestore setup.
+- Firebase Storage setup.
+- Google Cloud project setup.
+- YouTube Data API activation.
+- OAuth consent screen.
+- OAuth redirect URI.
+- YouTube channel connection.
+- Environment variables.
+- GitHub setup.
+- Render web service deployment.
+- Render cron deployment.
+- Testing.
+- Troubleshooting.
+- YouTube API quota.
+- YouTube compliance audit.
+
+Create an .env.example with placeholder values only.
+
+---
+
+# 26. TESTING
+
+Test the actual application.
+
+Include tests for:
+
+- Firebase authentication.
+- YouTube OAuth.
+- Token refresh.
+- Bulk uploads.
+- Metadata defaults.
+- Firestore persistence.
+- Queue refill.
+- Six-slot scheduling.
+- Duplicate prevention.
+- Concurrent scheduler execution.
+- YouTube upload failures.
+- Retry behavior.
+- Successful publication.
+- Storage cleanup.
+- Automation pause and resume.
+- Cron authentication.
+
+Important scenarios:
+
+Scenario A:
+There are six waiting videos and zero scheduled videos.
+
+Expected:
+Six videos are scheduled.
+
+Scenario B:
+There are six scheduled videos and one publishes successfully.
+
+Expected:
+One new video is scheduled into the next available slot.
+
+Scenario C:
+There are four waiting videos and two scheduled videos.
+
+Expected:
+Four more videos are scheduled, bringing the total to six.
+
+Scenario D:
+There are no waiting videos and three scheduled videos.
+
+Expected:
+Keep the three scheduled videos untouched and display that three more videos are needed.
+
+Scenario E:
+YouTube upload fails.
+
+Expected:
+Do not mark the video Published. Preserve the file and safely retry.
+
+Scenario F:
+The user closes their laptop.
+
+Expected:
+The Render-hosted scheduler continues operating independently.
+
+Scenario G:
+The cron endpoint is called twice simultaneously.
+
+Expected:
+No duplicate video uploads or publishing jobs.
+
+Scenario H:
+The scheduler runs after a video has already been scheduled directly on YouTube.
+
+Expected:
+Recognize the existing scheduled video and do not upload it again.
+
+---
+
+# 27. IMPLEMENTATION RULES
+
+Follow these rules throughout development:
+
+1. Build a real application, not a visual mockup.
+2. Do not rebuild or reuse my old ShortsPilot project.
+3. Use the new Firebase project.
+4. Use the new GitHub repository.
+5. Use the new Render deployment.
+6. Keep all data persistent.
+7. Never use fake YouTube publishing responses.
+8. Never rely on setInterval for background publishing.
+9. Never require an open browser.
+10. Never require my laptop to stay switched on.
+11. Never delete a video before successful YouTube confirmation.
+12. Never publish duplicate videos.
+13. Never modify already scheduled YouTube videos without explicit permission.
+14. Keep all important buttons functional.
+15. Never expose credentials.
+16. Preserve publishing history.
+17. Handle errors safely.
+18. Explain any paid service requirements before asking me to activate them.
+
+---
+
+# 28. DEVELOPMENT WORKFLOW
+
+Build the application in this order:
+
+PHASE 1 — Architecture
+- Create the project.
+- Create the project structure.
+- Design Firestore collections.
+- Create Firestore indexes and rules.
+- Configure Firebase Admin.
+
+PHASE 2 — Authentication
+- Implement Firebase Auth.
+- Protect dashboard routes.
+- Implement user authorization.
+
+PHASE 3 — YouTube
+- Implement Google OAuth.
+- Implement encrypted token storage.
+- Implement token refresh.
+- Retrieve actual channel details.
+
+PHASE 4 — Video Management
+- Implement Firebase Storage.
+- Implement bulk upload.
+- Implement metadata defaults.
+- Implement the video library.
+
+PHASE 5 — Publishing
+- Implement YouTube resumable uploads.
+- Implement scheduled publishing.
+- Implement the persistent publishing queue.
+- Implement duplicate protection.
+
+PHASE 6 — Automation
+- Implement the six-slot scheduler.
+- Implement automatic rolling queue refill.
+- Implement retry handling.
+- Implement Render Cron Job integration.
+- Implement manual Refill Queue Now.
+
+PHASE 7 — Dashboard
+- Build the dashboard.
+- Build the queue page.
+- Build the calendar.
+- Build automation settings.
+- Build notifications.
+
+PHASE 8 — Deployment
+- Create the GitHub repository.
+- Configure Firebase.
+- Deploy to Render.
+- Configure the Render Cron Job.
+- Verify actual background execution.
+
+PHASE 9 — Final Verification
+- Test the complete publishing workflow.
+- Verify Firestore persistence.
+- Verify OAuth token refresh.
+- Verify the rolling queue.
+- Verify laptop-independent operation.
+- Fix all critical errors.
+
+---
+
+# 29. HOW TO WORK WITH ME
+
+I am not an experienced developer.
+
+Guide me step by step.
+
+Do not overwhelm me with dozens of setup instructions at once.
+
+First inspect the available connected services and repository access.
+
+Then create the new project architecture and begin implementation.
+
+If a service requires my authorization, ask me to connect it.
+
+If a setting needs manual configuration, give me the exact page, exact button, and exact value to enter.
+
+Ask me to complete one setup step at a time.
+
+Do not ask me to move between multiple platforms unnecessarily.
+
+Do not claim a task is completed unless it has actually been completed and verified.
+
+If you cannot access a service directly, clearly explain what I need to do manually.
+
+At the end of each phase, explain:
+- What you implemented.
+- What you tested.
+- What remains.
+- Whether I need to click Apply, Save, or Deploy.
+
+---
+
+# FINAL GOAL
+
+Deliver a fully working ShortsPilot SaaS application from scratch.
+
+I want to:
+
+1. Open ShortsPilot.
+2. Register or log in.
+3. Connect my YouTube channel.
+4. Upload 50, 100, or more different Shorts videos.
+5. Set one default title, description, and hashtag template.
+6. Configure six daily publishing times.
+7. Enable automation.
+8. Close my browser.
+9. Shut down my laptop.
+
+ShortsPilot must continue managing the publishing queue through its cloud-hosted backend.
+
+It must maintain six upcoming scheduled Shorts whenever enough videos are available, automatically replace successfully published videos, preserve publishing history, and never create duplicate uploads.
+
+**Start building the new ShortsPilot project now.**

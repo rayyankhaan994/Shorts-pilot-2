@@ -1,0 +1,248 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Reusable Primitives ---
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // --- Entity Validation Blueprints ---
+    function isValidUser(data) {
+      return data.keys().hasAll(['userId', 'email', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['userId', 'email', 'displayName', 'photoURL', 'createdAt', 'updatedAt'])
+        && data.userId is string && isValidId(data.userId) && data.userId == request.auth.uid
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 254
+        && (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 120))
+        && (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 1000))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidYouTubeChannel(data) {
+      return data.keys().hasAll(['userId', 'channelId', 'channelName', 'connected', 'tokenStatus', 'updatedAt'])
+        && data.keys().hasOnly(['userId', 'channelId', 'channelName', 'channelImage', 'connected', 'tokenStatus', 'tokenExpiry', 'connectedAt', 'updatedAt'])
+        && data.userId is string && isValidId(data.userId) && data.userId == request.auth.uid
+        && data.channelId is string && data.channelId.size() <= 128
+        && data.channelName is string && data.channelName.size() <= 200
+        && (!('channelImage' in data) || (data.channelImage is string && data.channelImage.size() <= 1000))
+        && data.connected is bool
+        && data.tokenStatus in ['valid', 'expired', 'revoked', 'disconnected']
+        && (!('tokenExpiry' in data) || data.tokenExpiry is string && data.tokenExpiry.size() <= 64)
+        && (!('connectedAt' in data) || data.connectedAt is timestamp)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidVideo(data) {
+      return data.keys().hasAll(['userId', 'storagePath', 'filename', 'title', 'description', 'hashtags', 'duration', 'status', 'queueOrder', 'retryCount', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['userId', 'storagePath', 'filename', 'fileSize', 'mimeType', 'title', 'description', 'hashtags', 'duration', 'thumbnailUrl', 'youtubeVideoId', 'scheduledAt', 'publishedAt', 'queueOrder', 'status', 'errorMessage', 'retryCount', 'metadataOverride', 'createdAt', 'updatedAt'])
+        && data.userId is string && isValidId(data.userId) && data.userId == request.auth.uid
+        && data.storagePath is string && data.storagePath.size() >= 1 && data.storagePath.size() <= 512
+        && data.filename is string && data.filename.size() >= 1 && data.filename.size() <= 255
+        && (!('fileSize' in data) || (data.fileSize is number && data.fileSize >= 0))
+        && (!('mimeType' in data) || (data.mimeType is string && data.mimeType.size() <= 100))
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 100
+        && data.description is string && data.description.size() <= 4500
+        && data.hashtags is string && data.hashtags.size() <= 500
+        && data.duration is number && data.duration >= 0 && data.duration <= 3600
+        && (!('thumbnailUrl' in data) || (data.thumbnailUrl is string && data.thumbnailUrl.size() <= 2000))
+        && (!('youtubeVideoId' in data) || (data.youtubeVideoId is string && data.youtubeVideoId.size() <= 64))
+        && (!('scheduledAt' in data) || (data.scheduledAt is string && data.scheduledAt.size() <= 64))
+        && (!('publishedAt' in data) || (data.publishedAt is string && data.publishedAt.size() <= 64))
+        && data.queueOrder is number && data.queueOrder >= 0
+        && data.status in ['Uploaded', 'Waiting', 'Processing', 'Scheduled', 'Published', 'Failed']
+        && (!('errorMessage' in data) || (data.errorMessage is string && data.errorMessage.size() <= 1000))
+        && data.retryCount is number && data.retryCount >= 0 && data.retryCount <= 20
+        && (!('metadataOverride' in data) || data.metadataOverride is bool)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPublishingSettings(data) {
+      return data.keys().hasAll(['userId', 'defaultTitle', 'defaultDescription', 'defaultHashtags', 'timezone', 'dailyPublishingTimes', 'dailyPublishingLimit', 'automationEnabled', 'autoRetry', 'autoCleanupStorage', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['userId', 'defaultTitle', 'defaultDescription', 'defaultHashtags', 'timezone', 'dailyPublishingTimes', 'dailyPublishingLimit', 'automationEnabled', 'autoRetry', 'autoCleanupStorage', 'lastSchedulerError', 'createdAt', 'updatedAt'])
+        && data.userId is string && isValidId(data.userId) && data.userId == request.auth.uid
+        && data.defaultTitle is string && data.defaultTitle.size() >= 1 && data.defaultTitle.size() <= 100
+        && data.defaultDescription is string && data.defaultDescription.size() <= 4500
+        && data.defaultHashtags is string && data.defaultHashtags.size() <= 500
+        && data.timezone is string && data.timezone.size() >= 1 && data.timezone.size() <= 64
+        && data.dailyPublishingTimes is list && data.dailyPublishingTimes.size() >= 1 && data.dailyPublishingTimes.size() <= 6
+        && data.dailyPublishingTimes[0] is string && data.dailyPublishingTimes[0].size() == 5
+        && data.dailyPublishingLimit is number && data.dailyPublishingLimit >= 1 && data.dailyPublishingLimit <= 6
+        && data.automationEnabled is bool
+        && data.autoRetry is bool
+        && data.autoCleanupStorage is bool
+        && (!('lastSchedulerError' in data) || (data.lastSchedulerError is string && data.lastSchedulerError.size() <= 500))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll(['userId', 'type', 'title', 'message', 'read', 'createdAt'])
+        && data.keys().hasOnly(['userId', 'type', 'title', 'message', 'read', 'createdAt'])
+        && data.userId is string && isValidId(data.userId) && data.userId == request.auth.uid
+        && data.type in ['youtube_connected', 'video_uploaded', 'video_scheduled', 'video_published', 'upload_failed', 'queue_empty', 'queue_refilled', 'auth_expired', 'quota_exhausted', 'automation_paused']
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 140
+        && data.message is string && data.message.size() >= 1 && data.message.size() <= 500
+        && data.read is bool
+        && data.createdAt is timestamp;
+    }
+
+    // --- Collection Rules ---
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isValidId(userId) && isVerifiedUser() && isOwner(userId)
+        && isValidUser(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(userId) && isVerifiedUser() && isOwner(userId)
+        && isValidUser(incoming())
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    match /youtube_channels/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if false;
+      allow update: if isValidId(userId) && isVerifiedUser() && isOwner(userId)
+        && isValidYouTubeChannel(incoming())
+        && incoming().userId == existing().userId
+        && incoming().updatedAt == request.time
+        && incoming().connected == false
+        && incoming().tokenStatus == 'disconnected'
+        && incoming().diff(existing()).affectedKeys().hasOnly(['connected', 'tokenStatus', 'updatedAt']);
+      allow delete: if isValidId(userId) && isVerifiedUser() && isOwner(userId);
+    }
+
+    // Strictly server-only OAuth refresh/access token ciphertext
+    match /youtube_channel_secrets/{userId} {
+      allow read, write: if false;
+    }
+
+    match /videos/{videoId} {
+      allow get: if isValidId(videoId) && isSignedIn() && existing().userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isValidId(videoId) && isVerifiedUser()
+        && isValidVideo(incoming())
+        && incoming().status in ['Uploaded', 'Waiting']
+        && (!('youtubeVideoId' in incoming()) || incoming().youtubeVideoId == '')
+        && incoming().retryCount == 0
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(videoId) && isVerifiedUser()
+        && existing().userId == request.auth.uid
+        && isValidVideo(incoming())
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().storagePath == existing().storagePath
+        && incoming().updatedAt == request.time
+        && existing().status != 'Published'
+        && existing().status != 'Processing'
+        && (
+          // Action 1: Edit metadata on non-scheduled, non-published video
+          (existing().status in ['Uploaded', 'Waiting', 'Failed']
+            && incoming().status == existing().status
+            && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'description', 'hashtags', 'metadataOverride', 'updatedAt']))
+          ||
+          // Action 2: Reorder queue position for waiting/uploaded video
+          (existing().status in ['Uploaded', 'Waiting']
+            && incoming().status in ['Uploaded', 'Waiting']
+            && incoming().diff(existing()).affectedKeys().hasOnly(['queueOrder', 'status', 'updatedAt']))
+          ||
+          // Action 3: Retry failed video back to Waiting
+          (existing().status == 'Failed'
+            && incoming().status == 'Waiting'
+            && incoming().errorMessage == ''
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'errorMessage', 'updatedAt']))
+        );
+      allow delete: if isValidId(videoId) && isVerifiedUser()
+        && existing().userId == request.auth.uid
+        && existing().status in ['Uploaded', 'Waiting', 'Failed'];
+    }
+
+    match /publishing_settings/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isValidId(userId) && isVerifiedUser() && isOwner(userId)
+        && isValidPublishingSettings(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(userId) && isVerifiedUser() && isOwner(userId)
+        && isValidPublishingSettings(incoming())
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'defaultTitle', 'defaultDescription', 'defaultHashtags',
+          'timezone', 'dailyPublishingTimes', 'dailyPublishingLimit',
+          'automationEnabled', 'autoRetry', 'autoCleanupStorage', 'updatedAt'
+        ]);
+      allow delete: if false;
+    }
+
+    match /publishing_jobs/{jobId} {
+      allow get: if isValidId(jobId) && isSignedIn() && existing().userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create, update, delete: if false;
+    }
+
+    match /publishing_history/{historyId} {
+      allow get: if isValidId(historyId) && isSignedIn() && existing().userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create, update: if false;
+      allow delete: if isValidId(historyId) && isVerifiedUser() && existing().userId == request.auth.uid;
+    }
+
+    // Server-only distributed scheduler locks
+    match /scheduler_locks/{lockId} {
+      allow read, write: if false;
+    }
+
+    match /notifications/{notificationId} {
+      allow get: if isValidId(notificationId) && isSignedIn() && existing().userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isValidId(notificationId) && isVerifiedUser()
+        && isValidNotification(incoming())
+        && incoming().createdAt == request.time;
+      allow update: if isValidId(notificationId) && isVerifiedUser()
+        && existing().userId == request.auth.uid
+        && isValidNotification(incoming())
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly(['read']);
+      allow delete: if isValidId(notificationId) && isVerifiedUser() && existing().userId == request.auth.uid;
+    }
+  }
+}

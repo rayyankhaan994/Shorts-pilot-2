@@ -1,0 +1,8 @@
+{
+  "name": "ShortsPilot",
+  "description": "Automated YouTube Shorts publishing SaaS with bulk video uploads, default metadata templates, six daily publishing slots in Asia/Kolkata, and an unattended rolling queue.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

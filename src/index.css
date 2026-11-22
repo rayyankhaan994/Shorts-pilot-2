@@ -1,0 +1,83 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --font-sans: 'Manrope', ui-sans-serif, system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+    --ease-base: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  html {
+    font-family: var(--font-sans);
+    background-color: #000000;
+    color: #f5f5f5;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: #000000;
+    color: #f5f5f5;
+    font-style: normal;
+  }
+
+  * {
+    font-style: normal;
+  }
+}
+
+/* Named Typography Styles (landing-page-design & SaaS system) */
+.heading-1 { font-size: 3.75rem; line-height: 1; font-weight: 600; letter-spacing: -0.025em; text-wrap: balance; }
+.heading-2 { font-size: 3rem; line-height: 1; font-weight: 600; letter-spacing: -0.02em; text-wrap: balance; }
+.heading-3 { font-size: 2.25rem; line-height: 2.5rem; font-weight: 600; letter-spacing: -0.02em; text-wrap: balance; }
+.heading-4 { font-size: 1.875rem; line-height: 2.25rem; font-weight: 600; letter-spacing: -0.015em; text-wrap: balance; }
+.heading-5 { font-size: 1.5rem; line-height: 2rem; font-weight: 600; letter-spacing: -0.01em; text-wrap: balance; }
+.heading-6 { font-size: 1.25rem; line-height: 1.75rem; font-weight: 600; letter-spacing: -0.01em; }
+
+.title-1 { font-size: 1.25rem; line-height: 1.75rem; font-weight: 500; }
+.title-2 { font-size: 1.125rem; line-height: 1.75rem; font-weight: 500; }
+.title-3 { font-size: 1rem; line-height: 1.5rem; font-weight: 500; }
+.title-4 { font-size: 0.875rem; line-height: 1.25rem; font-weight: 500; }
+.title-5 { font-size: 0.75rem; line-height: 1rem; font-weight: 500; }
+
+.body-1 { font-size: 1rem; line-height: 1.5rem; font-weight: 600; text-wrap: pretty; }
+.body-2 { font-size: 1rem; line-height: 1.5rem; font-weight: 500; text-wrap: pretty; }
+.body-3 { font-size: 1rem; line-height: 1.5rem; font-weight: 400; text-wrap: pretty; }
+.body-4 { font-size: 0.875rem; line-height: 1.25rem; font-weight: 600; text-wrap: pretty; }
+.body-5 { font-size: 0.875rem; line-height: 1.25rem; font-weight: 500; text-wrap: pretty; }
+.body-6 { font-size: 0.875rem; line-height: 1.25rem; font-weight: 400; text-wrap: pretty; }
+
+.button-lg { font-size: 1.125rem; line-height: 1.75rem; font-weight: 600; }
+.button-md { font-size: 1rem; line-height: 1.5rem; font-weight: 600; }
+.button-sm { font-size: 0.875rem; line-height: 1.25rem; font-weight: 600; }
+.button-xsm { font-size: 0.75rem; line-height: 1rem; font-weight: 600; }
+
+.caption-1 { font-size: 0.875rem; line-height: 1.25rem; font-weight: 500; }
+.caption-2 { font-size: 0.875rem; line-height: 1.25rem; font-weight: 400; }
+.caption-3 { font-size: 0.75rem; line-height: 1rem; font-weight: 600; }
+.caption-4 { font-size: 0.75rem; line-height: 1rem; font-weight: 500; }
+.caption-5 { font-size: 0.75rem; line-height: 1rem; font-weight: 400; }
+
+.font-mono-tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.hero-text-gradient {
+  background-image: linear-gradient(90deg, #ffffff 0%, #9b9b9b 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .motion-safe-only {
+    transition: opacity 200ms ease !important;
+    transform: none !important;
+  }
+}

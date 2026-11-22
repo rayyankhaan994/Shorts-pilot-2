@@ -1,0 +1,469 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Authenticated ShortsPilot user profile",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 254
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "photoURL": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "email", "createdAt", "updatedAt"]
+    },
+    "YouTubeChannel": {
+      "title": "YouTubeChannel",
+      "description": "Public-to-owner YouTube channel connection metadata (no secret tokens stored here)",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "channelId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "channelName": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "channelImage": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "connected": {
+          "type": "boolean"
+        },
+        "tokenStatus": {
+          "type": "string",
+          "enum": ["valid", "expired", "revoked", "disconnected"]
+        },
+        "tokenExpiry": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "connectedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "channelId", "channelName", "connected", "tokenStatus", "updatedAt"]
+    },
+    "YouTubeChannelSecret": {
+      "title": "YouTubeChannelSecret",
+      "description": "Server-only AES-256-GCM encrypted OAuth credentials (inaccessible from client SDK)",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "encryptedAccessToken": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "encryptedRefreshToken": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "tokenExpiry": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "encryptedAccessToken", "encryptedRefreshToken", "updatedAt"]
+    },
+    "Video": {
+      "title": "Video",
+      "description": "Uploaded Shorts video metadata and publishing lifecycle record",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "storagePath": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "filename": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "fileSize": {
+          "type": "number"
+        },
+        "mimeType": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 4500
+        },
+        "hashtags": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "duration": {
+          "type": "number"
+        },
+        "thumbnailUrl": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "youtubeVideoId": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "scheduledAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "publishedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "queueOrder": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Uploaded", "Waiting", "Processing", "Scheduled", "Published", "Failed"]
+        },
+        "errorMessage": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "retryCount": {
+          "type": "number"
+        },
+        "metadataOverride": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "storagePath", "filename", "title", "description", "hashtags", "duration", "status", "queueOrder", "retryCount", "createdAt", "updatedAt"]
+    },
+    "PublishingSettings": {
+      "title": "PublishingSettings",
+      "description": "User automation schedule, timezone, and default metadata template",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "defaultTitle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "defaultDescription": {
+          "type": "string",
+          "maxLength": 4500
+        },
+        "defaultHashtags": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "timezone": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "dailyPublishingTimes": {
+          "type": "array",
+          "description": "Up to 6 daily HH:mm time slots"
+        },
+        "dailyPublishingLimit": {
+          "type": "number"
+        },
+        "automationEnabled": {
+          "type": "boolean"
+        },
+        "autoRetry": {
+          "type": "boolean"
+        },
+        "autoCleanupStorage": {
+          "type": "boolean"
+        },
+        "lastSchedulerError": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "defaultTitle", "defaultDescription", "defaultHashtags", "timezone", "dailyPublishingTimes", "dailyPublishingLimit", "automationEnabled", "autoRetry", "autoCleanupStorage", "createdAt", "updatedAt"]
+    },
+    "PublishingJob": {
+      "title": "PublishingJob",
+      "description": "Idempotent background publishing job tracking a scheduled YouTube upload",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "videoId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "scheduledAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "youtubeVideoId": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Pending", "Processing", "Scheduled", "Published", "Failed"]
+        },
+        "retryCount": {
+          "type": "number"
+        },
+        "lastError": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "idempotencyKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "videoId", "scheduledAt", "status", "retryCount", "idempotencyKey", "createdAt", "updatedAt"]
+    },
+    "PublishingHistory": {
+      "title": "PublishingHistory",
+      "description": "Permanent record of published YouTube Shorts",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "videoId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "youtubeVideoId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "filename": {
+          "type": "string",
+          "maxLength": 255
+        },
+        "scheduledAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "publishedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Published"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "videoId", "youtubeVideoId", "title", "publishedAt", "status", "createdAt"]
+    },
+    "SchedulerLock": {
+      "title": "SchedulerLock",
+      "description": "Server-only distributed lock preventing concurrent cron executions from duplicating uploads",
+      "type": "object",
+      "properties": {
+        "lockKey": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "ownerInstance": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["lockKey", "ownerInstance", "expiresAt", "createdAt"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "User-facing activity and alert notification",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "youtube_connected",
+            "video_uploaded",
+            "video_scheduled",
+            "video_published",
+            "upload_failed",
+            "queue_empty",
+            "queue_refilled",
+            "auth_expired",
+            "quota_exhausted",
+            "automation_paused"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 140
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "read": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "type", "title", "message", "read", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User account profiles isolated per owner"
+    },
+    "/youtube_channels/{userId}": {
+      "schema": { "$ref": "#/entities/YouTubeChannel" },
+      "description": "Connected YouTube channel display status per user"
+    },
+    "/youtube_channel_secrets/{userId}": {
+      "schema": { "$ref": "#/entities/YouTubeChannelSecret" },
+      "description": "Server-only encrypted OAuth refresh and access tokens"
+    },
+    "/videos/{videoId}": {
+      "schema": { "$ref": "#/entities/Video" },
+      "description": "Uploaded Shorts videos and publishing statuses"
+    },
+    "/publishing_settings/{userId}": {
+      "schema": { "$ref": "#/entities/PublishingSettings" },
+      "description": "Default metadata, timezone, and six daily publishing slots"
+    },
+    "/publishing_jobs/{jobId}": {
+      "schema": { "$ref": "#/entities/PublishingJob" },
+      "description": "Idempotent publishing jobs for the six-slot rolling queue"
+    },
+    "/publishing_history/{historyId}": {
+      "schema": { "$ref": "#/entities/PublishingHistory" },
+      "description": "Immutable publishing history entries"
+    },
+    "/scheduler_locks/{lockId}": {
+      "schema": { "$ref": "#/entities/SchedulerLock" },
+      "description": "Server-only distributed scheduler locks"
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/Notification" },
+      "description": "User notifications for uploads, publishing, and errors"
+    }
+  }
+}

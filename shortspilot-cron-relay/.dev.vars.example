@@ -1,0 +1,7 @@
+# Local Wrangler development secrets for shortspilot-cron-relay
+# Copy to .dev.vars for local testing; in production set CRON_SECRET via:
+#   npx wrangler secret put CRON_SECRET
+#   npx wrangler secret put RENDER_APP_URL
+
+RENDER_APP_URL="https://YOUR-RENDER-URL"
+CRON_SECRET=""
