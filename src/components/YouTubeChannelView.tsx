@@ -14,6 +14,7 @@ interface YouTubeChannelViewProps {
   channel: YouTubeChannel | null;
   readiness: EnvReadiness | null;
   timezone: string;
+  oauthError?: string;
   onConnect: () => Promise<void>;
   onDisconnect: () => Promise<void>;
   onRefresh: () => Promise<unknown>;
@@ -23,6 +24,7 @@ export function YouTubeChannelView({
   channel,
   readiness,
   timezone,
+  oauthError,
   onConnect,
   onDisconnect,
   onRefresh,
@@ -90,9 +92,9 @@ export function YouTubeChannelView({
         </p>
       </div>
 
-      {error && (
-        <div className="p-4 rounded-xl bg-[#181818] border border-red-900/60 text-red-400 body-6">
-          {error}
+      {(error || oauthError) && (
+        <div role="alert" className="p-4 rounded-xl bg-[#181818] border border-red-900/60 text-red-400 body-6 whitespace-pre-wrap">
+          {error || oauthError}
         </div>
       )}
 
