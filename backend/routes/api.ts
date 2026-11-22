@@ -9,6 +9,10 @@ import { signStreamToken, timingSafeEqual, verifyStreamToken } from '../lib/cryp
 import { verifyFirebaseIdToken } from '../lib/firebaseAuth.ts';
 import { FirestoreRestClient } from '../lib/firestoreRest.ts';
 import { getVideoStorage } from '../services/b2Storage.ts';
+import {
+  recoverFailedVideosSafely,
+  runStorageDiagnostics,
+} from '../services/diagnostics.ts';
 import { refillUserQueue, runGlobalCronScheduler } from '../services/scheduler.ts';
 import {
   disconnectYouTubeChannel,
@@ -80,10 +84,12 @@ export function createApiApp(options: { getStorage?: () => VideoStorageAdapter }
       ok: true,
       service: 'shortspilot',
       runtime: readiness.runtime,
+      productionMode: readiness.productionMode,
       storageBackend: readiness.storageBackend,
       timestamp: new Date().toISOString(),
       readiness: {
         b2Configured: readiness.b2Configured,
+        b2RegionMismatch: readiness.b2RegionMismatch,
         firebaseClientConfigured: readiness.firebaseClientConfigured,
         firebaseAdminConfigured: readiness.firebaseAdminConfigured,
         googleOAuthConfigured: readiness.googleOAuthConfigured,
@@ -272,7 +278,37 @@ export function createApiApp(options: { getStorage?: () => VideoStorageAdapter }
       return c.json({ error: 'Only MP4, MOV, or WebM video files are allowed.' }, 400);
     }
 
-    const storage = resolveStorage();
+    let storage: VideoStorageAdapter;
+    try {
+      storage = resolveStorage();
+    } catch (err) {
+      return c.json(
+        { error: err instanceof Error ? err.message : 'Backblaze B2 storage is not available.' },
+        503
+      );
+    }
+
+    if (hasServiceAccountCredentials()) {
+      const db = new FirestoreRestClient();
+      const existingDoc = await db.getDoc(`videos/${videoId}`);
+      if (existingDoc.exists && existingDoc.data) {
+        if (existingDoc.data.userId !== authResult.uid) {
+          return c.json({ error: 'Forbidden' }, 403);
+        }
+        const existingStatus = String(existingDoc.data.status || '');
+        if (
+          existingStatus === 'Scheduled' ||
+          existingStatus === 'Published' ||
+          existingStatus === 'Processing'
+        ) {
+          return c.json(
+            { error: `Cannot overwrite source video while status is ${existingStatus}.` },
+            409
+          );
+        }
+      }
+    }
+
     const key = buildVideoKey(authResult.uid, videoId);
     const multipart = await storage.createMultipartUpload(key, {
       contentType: mimeType || 'video/mp4',
@@ -311,7 +347,15 @@ export function createApiApp(options: { getStorage?: () => VideoStorageAdapter }
       return c.json({ error: 'Invalid chunk size' }, 400);
     }
 
-    const storage = resolveStorage();
+    let storage: VideoStorageAdapter;
+    try {
+      storage = resolveStorage();
+    } catch (err) {
+      return c.json(
+        { error: err instanceof Error ? err.message : 'Backblaze B2 storage is not available.' },
+        503
+      );
+    }
     const key = buildVideoKey(authResult.uid, videoId);
     const uploadedPart = await storage.uploadPart(key, uploadId, partNumber, body);
 
@@ -323,6 +367,7 @@ export function createApiApp(options: { getStorage?: () => VideoStorageAdapter }
 
   const completeUploadSchema = z.object({
     uploadId: z.string().min(1),
+    expectedFileSize: z.number().int().positive().max(MAX_VIDEO_SIZE_BYTES).optional(),
     parts: z
       .array(
         z.object({
@@ -348,21 +393,66 @@ export function createApiApp(options: { getStorage?: () => VideoStorageAdapter }
       return c.json({ error: 'Invalid multipart completion payload' }, 400);
     }
 
-    const storage = resolveStorage();
-    const key = buildVideoKey(authResult.uid, videoId);
-    const completed = await storage.completeMultipartUpload(
-      key,
-      parsed.data.uploadId,
-      parsed.data.parts
-    );
-    const streamToken = await signStreamToken({ uid: authResult.uid, key });
+    let storage: VideoStorageAdapter;
+    try {
+      storage = resolveStorage();
+    } catch (err) {
+      return c.json(
+        { error: err instanceof Error ? err.message : 'Backblaze B2 storage is not available.' },
+        503
+      );
+    }
 
-    return c.json({
-      ok: true,
-      storagePath: key,
-      size: completed.size,
-      previewUrl: `/api/storage/stream?token=${encodeURIComponent(streamToken)}`,
-    });
+    const key = buildVideoKey(authResult.uid, videoId);
+    try {
+      await storage.completeMultipartUpload(
+        key,
+        parsed.data.uploadId,
+        parsed.data.parts
+      );
+      const verifiedHead = await storage.head(key);
+      if (!verifiedHead || verifiedHead.size <= 0) {
+        return c.json(
+          {
+            error: `Backblaze B2 HeadObject verification failed for ${key}. Upload cannot be confirmed.`,
+            verified: false,
+          },
+          502
+        );
+      }
+      if (
+        parsed.data.expectedFileSize !== undefined &&
+        verifiedHead.size !== parsed.data.expectedFileSize
+      ) {
+        return c.json(
+          {
+            error: `Uploaded file size mismatch in B2: expected ${parsed.data.expectedFileSize} bytes, verified ${verifiedHead.size} bytes.`,
+            verified: false,
+          },
+          502
+        );
+      }
+
+      const streamToken = await signStreamToken({ uid: authResult.uid, key });
+
+      return c.json({
+        ok: true,
+        verified: true,
+        storageBackend: storage.backendName,
+        storagePath: key,
+        size: verifiedHead.size,
+        contentType: verifiedHead.contentType || 'video/mp4',
+        previewUrl: `/api/storage/stream?token=${encodeURIComponent(streamToken)}`,
+      });
+    } catch (err) {
+      return c.json(
+        {
+          error: err instanceof Error ? err.message : 'Failed completing and verifying B2 upload.',
+          verified: false,
+        },
+        502
+      );
+    }
   });
 
   app.post('/api/storage/uploads/:videoId/abort', async (c) => {
@@ -497,6 +587,87 @@ export function createApiApp(options: { getStorage?: () => VideoStorageAdapter }
         'Cache-Control': 'private, max-age=300',
       },
     });
+  });
+
+  // --- Authenticated Backblaze B2 Diagnostics & Safe Recovery Routes ---
+
+  app.get('/api/storage/diagnostics', async (c) => {
+    const authResult = await requireFirebaseUser(c);
+    if (authResult instanceof Response) return authResult;
+
+    try {
+      const report = await runStorageDiagnostics(authResult.uid, {
+        ...(options.getStorage ? { storage: resolveStorage() } : {}),
+      });
+      return c.json(report);
+    } catch (err) {
+      return c.json(
+        { error: err instanceof Error ? err.message : 'Could not run B2 storage diagnostics.' },
+        500
+      );
+    }
+  });
+
+  app.get('/api/storage/diagnostics/:videoId', async (c) => {
+    const authResult = await requireFirebaseUser(c);
+    if (authResult instanceof Response) return authResult;
+
+    const videoId = c.req.param('videoId');
+    if (!VALID_ID_REGEX.test(videoId)) {
+      return c.json({ error: 'Invalid videoId' }, 400);
+    }
+
+    try {
+      const report = await runStorageDiagnostics(authResult.uid, {
+        videoId,
+        ...(options.getStorage ? { storage: resolveStorage() } : {}),
+      });
+      return c.json(report);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Diagnostics lookup failed';
+      const status = msg === 'Forbidden' ? 403 : msg === 'Video not found' ? 404 : 500;
+      return c.json({ error: msg }, status);
+    }
+  });
+
+  const recoverBodySchema = z
+    .object({
+      videoIds: z.array(z.string().regex(VALID_ID_REGEX)).max(100).optional(),
+    })
+    .optional();
+
+  app.post('/api/storage/recover', async (c) => {
+    const authResult = await requireFirebaseUser(c);
+    if (authResult instanceof Response) return authResult;
+
+    const json = await c.req.json().catch(() => undefined);
+    const parsed = recoverBodySchema.safeParse(json);
+    if (!parsed.success) {
+      return c.json({ error: 'Invalid recovery request payload.' }, 400);
+    }
+
+    if (!hasServiceAccountCredentials()) {
+      return c.json(
+        {
+          error:
+            'Firebase service account credentials are required on the server to verify and recover video records.',
+        },
+        503
+      );
+    }
+
+    try {
+      const storage = resolveStorage();
+      const report = await recoverFailedVideosSafely(authResult.uid, {
+        videoIds: parsed.data?.videoIds,
+        storage,
+      });
+      return c.json(report);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Recovery operation failed';
+      const status = msg.startsWith('Forbidden') ? 403 : 500;
+      return c.json({ error: msg }, status);
+    }
   });
 
   // --- Scheduler Routes ---

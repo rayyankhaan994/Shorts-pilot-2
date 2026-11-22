@@ -1,5 +1,6 @@
 import { AlertCircle, CheckCircle2, Play, RotateCcw, Trash2, UploadCloud } from 'lucide-react';
 import React, { useRef, useState } from 'react';
+import { uploadVideoToB2Multipart } from '../lib/b2Upload';
 import { formatBytes, formatDuration } from '../lib/timezone';
 import type { PublishingSettings, VideoRecord } from '../types/shortspilot';
 
@@ -106,122 +107,24 @@ export function UploadVideosView({
       )
     );
 
-    let activeUploadId: string | null = null;
     try {
-      const token = await getIdToken();
-      const mimeType = item.file.type || 'video/mp4';
-
-      const initRes = await fetch('/api/storage/uploads/init', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          videoId: item.videoId,
-          filename: item.file.name,
-          fileSize: item.file.size,
-          mimeType,
-        }),
-      });
-      const initData = (await initRes.json()) as {
-        uploadId?: string;
-        key?: string;
-        chunkSize?: number;
-        error?: string;
-      };
-      if (!initRes.ok || !initData.uploadId || !initData.key) {
-        throw new Error(initData.error || 'Could not initialize Backblaze B2 upload.');
-      }
-
-      activeUploadId = initData.uploadId;
-      const chunkSize = initData.chunkSize || 5 * 1024 * 1024;
-      const totalParts = Math.max(1, Math.ceil(item.file.size / chunkSize));
-      const parts: { partNumber: number; etag: string }[] = [];
-      let uploadedBytes = 0;
-
-      for (let partNumber = 1; partNumber <= totalParts; partNumber++) {
-        const start = (partNumber - 1) * chunkSize;
-        const end = Math.min(item.file.size, start + chunkSize);
-        const chunkBlob = item.file.slice(start, end);
-
-        let partResult: { partNumber: number; etag: string } | null = null;
-        let lastPartErr = 'Chunk upload failed';
-
-        for (let attempt = 1; attempt <= 3; attempt++) {
-          const freshToken = attempt > 1 ? await getIdToken() : token;
-          const partRes = await fetch(
-            `/api/storage/uploads/${encodeURIComponent(item.videoId)}/part?uploadId=${encodeURIComponent(
-              activeUploadId
-            )}&partNumber=${partNumber}`,
-            {
-              method: 'PUT',
-              headers: {
-                Authorization: `Bearer ${freshToken}`,
-                'Content-Type': 'application/octet-stream',
-              },
-              body: chunkBlob,
-            }
+      const verified = await uploadVideoToB2Multipart({
+        videoId: item.videoId,
+        file: item.file,
+        getIdToken,
+        onProgress: (pct) => {
+          setItems((prev) =>
+            prev.map((it) => (it.localId === item.localId ? { ...it, progress: pct } : it))
           );
-          const partJson = (await partRes.json().catch(() => ({}))) as {
-            partNumber?: number;
-            etag?: string;
-            error?: string;
-          };
-          if (partRes.ok && partJson.etag && partJson.partNumber) {
-            partResult = { partNumber: partJson.partNumber, etag: partJson.etag };
-            break;
-          }
-          lastPartErr = partJson.error || `Part ${partNumber} upload failed (${partRes.status})`;
-          if (attempt < 3) {
-            await new Promise((r) => setTimeout(r, 600 * attempt));
-          }
-        }
-
-        if (!partResult) {
-          throw new Error(lastPartErr);
-        }
-
-        parts.push(partResult);
-        uploadedBytes = end;
-        const pct = Math.min(99, Math.round((uploadedBytes / Math.max(1, item.file.size)) * 100));
-        setItems((prev) =>
-          prev.map((it) => (it.localId === item.localId ? { ...it, progress: pct } : it))
-        );
-      }
-
-      const completeToken = await getIdToken();
-      const completeRes = await fetch(
-        `/api/storage/uploads/${encodeURIComponent(item.videoId)}/complete`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${completeToken}`,
-          },
-          body: JSON.stringify({
-            uploadId: activeUploadId,
-            parts,
-          }),
-        }
-      );
-      const completeData = (await completeRes.json().catch(() => ({}))) as {
-        ok?: boolean;
-        storagePath?: string;
-        error?: string;
-      };
-      if (!completeRes.ok || !completeData.storagePath) {
-        throw new Error(completeData.error || 'Could not finalize Backblaze B2 upload.');
-      }
-
-      activeUploadId = null;
+        },
+      });
 
       await onCreateVideoRecord({
         videoId: item.videoId,
-        storagePath: completeData.storagePath,
+        storagePath: verified.storagePath,
         filename: item.file.name,
-        fileSize: item.file.size,
-        mimeType,
+        fileSize: verified.size,
+        mimeType: verified.contentType,
         duration: item.duration,
         thumbnailUrl: '',
         queueOrder: orderIndex,
@@ -233,20 +136,6 @@ export function UploadVideosView({
         )
       );
     } catch (err) {
-      if (activeUploadId) {
-        const abortToken = await getIdToken().catch(() => null);
-        if (abortToken) {
-          await fetch(`/api/storage/uploads/${encodeURIComponent(item.videoId)}/abort`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${abortToken}`,
-            },
-            body: JSON.stringify({ uploadId: activeUploadId }),
-          }).catch(() => {});
-        }
-      }
-
       setItems((prev) =>
         prev.map((it) =>
           it.localId === item.localId

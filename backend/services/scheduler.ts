@@ -2,7 +2,7 @@ import { randomHex } from '../lib/crypto.ts';
 import { FirestoreRestClient, toFirestoreFields } from '../lib/firestoreRest.ts';
 import { computeUpcomingSlots } from '../lib/timezone.ts';
 import type { VideoStorageAdapter } from '../types.ts';
-import { getVideoStorage } from './b2Storage.ts';
+import { getVideoStorage, isTransientStorageError } from './b2Storage.ts';
 import {
   deleteStoredVideoIfPresent,
   fetchExistingYouTubeScheduledTimes,
@@ -124,7 +124,11 @@ async function claimVideoForPublishing(
     const vSnap = await db.getDoc(videoPath, tx);
     const jSnap = await db.getDoc(jobPath, tx);
 
-    if (!vSnap.exists || vSnap.data?.status !== 'Waiting') {
+    if (
+      !vSnap.exists ||
+      vSnap.data?.status !== 'Waiting' ||
+      (typeof vSnap.data?.youtubeVideoId === 'string' && vSnap.data.youtubeVideoId.length > 0)
+    ) {
       await db.rollback(tx);
       return false;
     }
@@ -470,7 +474,85 @@ export async function refillUserQueue(
       };
     }
 
-    const videosToSchedule = waitingVideos.slice(0, slotsNeeded);
+    // Pre-verify B2 object existence via HeadObject before claiming any slot or calling YouTube.
+    const verifiedWaitingVideos: { video: VideoDoc; storagePath: string }[] = [];
+    let transientStorageHalted = false;
+    let inspectedMissingCount = 0;
+
+    for (const candidate of waitingVideos) {
+      if (verifiedWaitingVideos.length >= slotsNeeded) break;
+      if (typeof candidate.youtubeVideoId === 'string' && candidate.youtubeVideoId.length > 0) {
+        continue;
+      }
+
+      const candidatePath =
+        typeof candidate.storagePath === 'string' && candidate.storagePath.trim().length > 0
+          ? candidate.storagePath.trim()
+          : `users/${uid}/videos/${candidate.id}/original.mp4`;
+
+      try {
+        const head = await storage.head(candidatePath);
+        if (!head || head.size <= 0) {
+          inspectedMissingCount += 1;
+          const missingMsg = `Source video file is missing from B2 storage (${candidatePath}). Re-upload required.`;
+          await db.updateDoc(`videos/${candidate.id}`, {
+            status: 'Failed',
+            errorMessage: missingMsg.slice(0, 1000),
+            updatedAt: new Date(),
+          });
+          await addNotification(
+            db,
+            uid,
+            'upload_failed',
+            'Missing B2 source video',
+            `"${String(candidate.filename || candidate.title)}" cannot be scheduled because its MP4 is missing in Backblaze B2.`
+          );
+          errors.push(missingMsg);
+          continue;
+        }
+
+        verifiedWaitingVideos.push({ video: candidate, storagePath: candidatePath });
+      } catch (err) {
+        if (isTransientStorageError(err)) {
+          const transientMsg = `Temporary Backblaze B2 check error: ${
+            err instanceof Error ? err.message : String(err)
+          }`;
+          transientStorageHalted = true;
+          errors.push(transientMsg);
+          await db.setDoc(
+            `publishing_settings/${uid}`,
+            {
+              lastSchedulerError: transientMsg.slice(0, 500),
+              updatedAt: new Date(),
+            },
+            true
+          );
+          break;
+        }
+        const checkMsg = err instanceof Error ? err.message : String(err);
+        errors.push(`B2 verification error for ${candidate.id}: ${checkMsg}`);
+        break;
+      }
+    }
+
+    if (transientStorageHalted || verifiedWaitingVideos.length === 0) {
+      const remainingWaiting = Math.max(0, waitingVideos.length - inspectedMissingCount);
+      return {
+        userId: uid,
+        locked: false,
+        publishedVerified,
+        newlyScheduled: 0,
+        upcomingScheduledCount: currentUpcomingCount,
+        shortageCount: slotsNeeded,
+        waitingRemaining: remainingWaiting,
+        errors,
+        message: transientStorageHalted
+          ? 'Temporary Backblaze B2 connectivity issue detected. Waiting videos remain untouched for automatic retry.'
+          : `No eligible verified Waiting videos are available in Backblaze B2 (${currentUpcomingCount}/${limit} scheduled).`,
+      };
+    }
+
+    const videosToSchedule = verifiedWaitingVideos.slice(0, slotsNeeded);
     const nextSlots = computeUpcomingSlots({
       timeZone,
       dailyPublishingTimes: dailyTimes,
@@ -479,7 +561,7 @@ export async function refillUserQueue(
     });
 
     for (let i = 0; i < videosToSchedule.length && i < nextSlots.length; i++) {
-      const video = videosToSchedule[i];
+      const { video, storagePath } = videosToSchedule[i];
       const slotIso = nextSlots[i];
       const idempotencyKey = `${uid}_${video.id}_${slotIso.replace(/[:.]/g, '-')}`;
 
@@ -497,7 +579,7 @@ export async function refillUserQueue(
         const result = await uploadScheduledShortToYouTube(
           {
             uid,
-            storagePath: String(video.storagePath),
+            storagePath,
             mimeType: String(video.mimeType || 'video/mp4'),
             title: String(video.title || settings.defaultTitle || 'ShortsPilot Video #shorts'),
             description: String(video.description ?? settings.defaultDescription ?? ''),
@@ -531,14 +613,17 @@ export async function refillUserQueue(
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
+        const isTransientB2 = isTransientStorageError(err);
         const isQuota = msg.toLowerCase().includes('quota');
-        const nextRetryCount = Number(video.retryCount || 0) + 1;
-        const canRetry = Boolean(settings.autoRetry) && !isQuota && nextRetryCount < 3;
+        const currentRetryCount = Number(video.retryCount || 0);
+        const nextRetryCount = isTransientB2 ? currentRetryCount : currentRetryCount + 1;
+        const canRetry =
+          isTransientB2 || (Boolean(settings.autoRetry) && !isQuota && nextRetryCount < 3);
 
         await db.updateDoc(`videos/${video.id}`, {
           status: canRetry ? 'Waiting' : 'Failed',
           retryCount: nextRetryCount,
-          errorMessage: msg.slice(0, 1000),
+          errorMessage: isTransientB2 ? '' : msg.slice(0, 1000),
           updatedAt: new Date(),
         });
 
@@ -558,21 +643,26 @@ export async function refillUserQueue(
           true
         );
 
-        await addNotification(
-          db,
-          uid,
-          isQuota ? 'quota_exhausted' : 'upload_failed',
-          isQuota ? 'YouTube API quota reached' : 'Short upload failed',
-          `Failed uploading "${String(video.filename || video.title)}": ${msg.slice(0, 350)}`
-        );
+        if (!isTransientB2) {
+          await addNotification(
+            db,
+            uid,
+            isQuota ? 'quota_exhausted' : 'upload_failed',
+            isQuota ? 'YouTube API quota reached' : 'Short upload failed',
+            `Failed uploading "${String(video.filename || video.title)}": ${msg.slice(0, 350)}`
+          );
+        }
 
         errors.push(msg);
-        if (isQuota) break;
+        if (isQuota || isTransientB2) break;
       }
     }
 
     const totalUpcomingAfter = currentUpcomingCount + newlyScheduled;
-    const waitingRemaining = Math.max(0, waitingVideos.length - newlyScheduled);
+    const waitingRemaining = Math.max(
+      0,
+      waitingVideos.length - inspectedMissingCount - newlyScheduled
+    );
     const shortageAfter = Math.max(0, limit - totalUpcomingAfter);
 
     if (newlyScheduled > 0) {

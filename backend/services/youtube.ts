@@ -460,6 +460,12 @@ export async function uploadScheduledShortToYouTube(
     }
 
     const chunkBuffer = await obj.arrayBuffer();
+    if (chunkBuffer.byteLength !== length) {
+      throw new Error(
+        `Incomplete B2 chunk read at offset ${offset}: expected ${length} bytes, received ${chunkBuffer.byteLength} bytes.`
+      );
+    }
+    const chunkBytes = new Uint8Array(chunkBuffer);
     let chunkSuccess = false;
     let lastChunkErr = '';
 
@@ -467,11 +473,11 @@ export async function uploadScheduledShortToYouTube(
       const putRes = await fetch(uploadUrl, {
         method: 'PUT',
         headers: {
-          'Content-Length': String(chunkBuffer.byteLength),
+          'Content-Length': String(chunkBytes.byteLength),
           'Content-Range': `bytes ${offset}-${end}/${totalSize}`,
           'Content-Type': contentType,
         },
-        body: chunkBuffer,
+        body: new Uint8Array(chunkBytes),
       });
 
       if (putRes.status === 200 || putRes.status === 201) {

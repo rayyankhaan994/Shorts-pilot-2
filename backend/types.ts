@@ -25,6 +25,22 @@ export interface StorageMultipartPart {
   etag: string;
 }
 
+export interface StorageObjectListItem {
+  key: string;
+  size: number;
+}
+
+export interface StorageHealthCheck {
+  backendName: 'backblaze-b2' | 'local-dev-storage';
+  connected: boolean;
+  bucketAccessible: boolean;
+  bucketName?: string;
+  endpointHost?: string;
+  region?: string;
+  regionMismatch?: boolean;
+  error: string | null;
+}
+
 export interface VideoStorageAdapter {
   readonly backendName: 'backblaze-b2' | 'local-dev-storage';
   readonly isConfigured: boolean;
@@ -32,6 +48,8 @@ export interface VideoStorageAdapter {
   get(key: string, options?: { range?: { offset: number; length: number } }): Promise<StorageObjectBody | null>;
   put(key: string, value: ArrayBuffer | Uint8Array | string, contentType?: string): Promise<StorageObjectHead>;
   delete(key: string): Promise<void>;
+  listPrefix?(prefix: string, maxKeys?: number): Promise<StorageObjectListItem[]>;
+  checkHealth?(): Promise<StorageHealthCheck>;
   createMultipartUpload(
     key: string,
     options?: { contentType?: string; metadata?: Record<string, string> }

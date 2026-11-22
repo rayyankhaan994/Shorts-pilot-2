@@ -12,6 +12,10 @@ export interface AppletConfig {
 
 const appletConfig = appletConfigJson as AppletConfig;
 
+export function isProductionRuntime(): boolean {
+  return process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
+}
+
 export function getFirebaseProjectId(): string {
   return process.env.FIREBASE_PROJECT_ID?.trim() || appletConfig.projectId || '';
 }
@@ -46,20 +50,47 @@ export function hasServiceAccountCredentials(): boolean {
 
 export function getB2Config() {
   const endpointRaw = process.env.B2_ENDPOINT?.trim() || '';
-  const endpoint = endpointRaw
+  const withScheme = endpointRaw
     ? endpointRaw.startsWith('http://') || endpointRaw.startsWith('https://')
-      ? endpointRaw.replace(/\/+$/, '')
-      : `https://${endpointRaw.replace(/\/+$/, '')}`
+      ? endpointRaw
+      : `https://${endpointRaw}`
     : '';
+
+  let endpoint = '';
+  let endpointHost = '';
+  let endpointHadExtraPath = false;
+  if (withScheme) {
+    try {
+      const parsed = new URL(withScheme);
+      endpoint = parsed.origin;
+      endpointHost = parsed.host;
+      endpointHadExtraPath = parsed.pathname !== '' && parsed.pathname !== '/';
+    } catch {
+      endpoint = withScheme.replace(/\/+$/, '');
+    }
+  }
+
   const regionMatch = /s3\.([a-z0-9-]+)\.backblazeb2\.com/i.exec(endpoint);
-  const region = process.env.B2_REGION?.trim() || regionMatch?.[1] || 'us-west-004';
+  const endpointRegion = regionMatch?.[1] || null;
+  const configuredRegion = process.env.B2_REGION?.trim() || '';
+  const region = configuredRegion || endpointRegion || 'us-west-004';
+  const regionMismatch = Boolean(
+    endpointRegion &&
+      configuredRegion &&
+      endpointRegion.toLowerCase() !== configuredRegion.toLowerCase()
+  );
+
   const bucketName = process.env.B2_BUCKET_NAME?.trim() || '';
   const keyId = process.env.B2_KEY_ID?.trim() || '';
   const applicationKey = process.env.B2_APPLICATION_KEY?.trim() || '';
 
   return {
     endpoint,
+    endpointHost,
+    endpointHadExtraPath,
+    endpointRegion,
     region,
+    regionMismatch,
     bucketName,
     keyId,
     applicationKey,
@@ -69,13 +100,23 @@ export function getB2Config() {
 
 export function getServerEnvReadiness() {
   const b2 = getB2Config();
+  const prod = isProductionRuntime();
   return {
     appUrl: getBaseAppUrl(),
     runtime: 'render-node-hono',
-    storageBackend: b2.configured ? 'backblaze-b2' : 'local-dev-storage',
+    productionMode: prod,
+    storageBackend: b2.configured
+      ? 'backblaze-b2'
+      : prod
+        ? 'backblaze-b2-unconfigured'
+        : 'local-dev-storage',
     firebaseProjectId: getFirebaseProjectId(),
     firestoreDatabaseId: getFirestoreDatabaseId(),
     b2Configured: b2.configured,
+    b2EndpointHost: b2.endpointHost || undefined,
+    b2Region: b2.configured ? b2.region : undefined,
+    b2BucketName: b2.bucketName || undefined,
+    b2RegionMismatch: b2.regionMismatch,
     firebaseClientConfigured: Boolean(appletConfig.apiKey && appletConfig.projectId),
     firebaseAdminConfigured: hasServiceAccountCredentials(),
     googleOAuthConfigured: Boolean(

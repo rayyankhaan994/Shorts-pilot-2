@@ -159,6 +159,8 @@ function ShortsPilotApp() {
             onToggleAutomation={data.toggleAutomation}
             onReorderWaiting={data.reorderWaitingVideos}
             onRetryFailed={data.retryFailedVideo}
+            onVerifyAndRecoverAll={() => data.runSafeRecovery()}
+            onReuploadMissing={data.reuploadMissingVideo}
             onDeleteWaiting={data.deleteWaitingVideo}
           />
         )}
@@ -199,6 +201,7 @@ function ShortsPilotApp() {
             timezone={timezone}
             onResetPassword={resetPassword}
             onMarkNotificationRead={data.markNotificationRead}
+            onRunDiagnostics={() => data.fetchStorageDiagnostics()}
           />
         )}
       </main>

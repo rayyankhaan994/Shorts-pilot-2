@@ -13,6 +13,7 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import { useCallback, useEffect, useState } from 'react';
+import { uploadVideoToB2Multipart } from '../lib/b2Upload';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import type {
   EnvReadiness,
@@ -22,6 +23,8 @@ import type {
   PublishingJobRecord,
   PublishingSettings,
   RefillResult,
+  SafeRecoveryReport,
+  StorageDiagnosticsReport,
   VideoRecord,
   YouTubeChannel,
 } from '../types/shortspilot';
@@ -265,17 +268,78 @@ export function useShortsPilotData(user: User | null, authReady: boolean) {
     }
   }, []);
 
-  const retryFailedVideo = useCallback(async (videoId: string) => {
-    try {
-      await updateDoc(doc(db, 'videos', videoId), {
-        status: 'Waiting',
-        errorMessage: '',
-        updatedAt: serverTimestamp(),
+  const fetchStorageDiagnostics = useCallback(
+    async (videoId?: string): Promise<StorageDiagnosticsReport> => {
+      const token = await getIdToken();
+      const url = videoId
+        ? `/api/storage/diagnostics/${encodeURIComponent(videoId)}`
+        : '/api/storage/diagnostics';
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}` },
       });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `videos/${videoId}`);
-    }
-  }, []);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(
+          (data as { error?: string }).error || 'Failed to run Backblaze B2 diagnostics'
+        );
+      }
+      return data as StorageDiagnosticsReport;
+    },
+    [getIdToken]
+  );
+
+  const runSafeRecovery = useCallback(
+    async (videoIds?: string[]): Promise<SafeRecoveryReport> => {
+      const token = await getIdToken();
+      const res = await fetch('/api/storage/recover', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(videoIds && videoIds.length > 0 ? { videoIds } : {}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(
+          (data as { error?: string }).error || 'Failed running safe Backblaze B2 recovery'
+        );
+      }
+      return data as SafeRecoveryReport;
+    },
+    [getIdToken]
+  );
+
+  const retryFailedVideo = useCallback(
+    async (videoId: string) => {
+      const report = await runSafeRecovery([videoId]);
+      const item = report.results[0];
+      if (!item || item.action !== 'restored_to_waiting') {
+        throw new Error(
+          item?.message ||
+            'Original MP4 is missing from Backblaze B2. Re-upload the MP4 into this slot first.'
+        );
+      }
+    },
+    [runSafeRecovery]
+  );
+
+  const reuploadMissingVideo = useCallback(
+    async (
+      videoId: string,
+      file: File,
+      onProgress?: (pct: number) => void
+    ): Promise<SafeRecoveryReport> => {
+      await uploadVideoToB2Multipart({
+        videoId,
+        file,
+        getIdToken,
+        onProgress,
+      });
+      return runSafeRecovery([videoId]);
+    },
+    [getIdToken, runSafeRecovery]
+  );
 
   const getVideoPlaybackUrl = useCallback(
     async (videoId: string): Promise<string> => {
@@ -485,6 +549,9 @@ export function useShortsPilotData(user: User | null, authReady: boolean) {
     getIdToken,
     getVideoPlaybackUrl,
     fetchReadiness,
+    fetchStorageDiagnostics,
+    runSafeRecovery,
+    reuploadMissingVideo,
     createVideoRecord,
     updateVideoMetadata,
     reorderWaitingVideos,

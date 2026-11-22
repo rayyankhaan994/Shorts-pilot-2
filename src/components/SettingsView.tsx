@@ -1,8 +1,21 @@
 import type { User } from 'firebase/auth';
-import { Bell, Check, CheckCircle2, KeyRound, Server } from 'lucide-react';
+import {
+  AlertCircle,
+  Bell,
+  Check,
+  CheckCircle2,
+  Database,
+  KeyRound,
+  RefreshCw,
+  Server,
+} from 'lucide-react';
 import { useState } from 'react';
-import { formatTimestampField } from '../lib/timezone';
-import type { EnvReadiness, NotificationRecord } from '../types/shortspilot';
+import { formatBytes, formatTimestampField } from '../lib/timezone';
+import type {
+  EnvReadiness,
+  NotificationRecord,
+  StorageDiagnosticsReport,
+} from '../types/shortspilot';
 
 interface SettingsViewProps {
   user: User;
@@ -11,6 +24,7 @@ interface SettingsViewProps {
   timezone: string;
   onResetPassword: (email: string) => Promise<void>;
   onMarkNotificationRead: (id: string) => Promise<void>;
+  onRunDiagnostics: () => Promise<StorageDiagnosticsReport>;
 }
 
 export function SettingsView({
@@ -20,9 +34,13 @@ export function SettingsView({
   timezone,
   onResetPassword,
   onMarkNotificationRead,
+  onRunDiagnostics,
 }: SettingsViewProps) {
   const [resetSent, setResetSent] = useState(false);
   const [resetError, setResetError] = useState('');
+  const [diagLoading, setDiagLoading] = useState(false);
+  const [diagError, setDiagError] = useState('');
+  const [diagnostics, setDiagnostics] = useState<StorageDiagnosticsReport | null>(null);
 
   const handlePasswordReset = async () => {
     if (!user.email) return;
@@ -35,12 +53,25 @@ export function SettingsView({
     }
   };
 
+  const handleRunDiagnostics = async () => {
+    setDiagLoading(true);
+    setDiagError('');
+    try {
+      const report = await onRunDiagnostics();
+      setDiagnostics(report);
+    } catch (err) {
+      setDiagError(err instanceof Error ? err.message : 'Could not run B2 diagnostics');
+    } finally {
+      setDiagLoading(false);
+    }
+  };
+
   return (
     <div className="space-y-8 max-w-4xl">
       <div className="space-y-1">
-        <h1 className="heading-4 text-white">Settings & notifications</h1>
+        <h1 className="heading-4 text-white">Settings & diagnostics</h1>
         <p className="body-6 text-[#A3A3A3]">
-          Manage your account security, review activity notifications, and inspect backend readiness.
+          Manage your account security, run live Backblaze B2 storage checks, and review notifications.
         </p>
       </div>
 
@@ -77,6 +108,132 @@ export function SettingsView({
         </div>
       </section>
 
+      {/* Backblaze B2 Live Diagnostics */}
+      <section className="bg-[#181818] border border-[#272727] rounded-2xl p-6 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <Database className="w-4 h-4 text-[#D4D4D4]" />
+            <h2 className="title-2 text-white">Backblaze B2 live storage diagnostics</h2>
+          </div>
+          <button
+            type="button"
+            disabled={diagLoading}
+            onClick={handleRunDiagnostics}
+            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-[#F5F5F5] text-[#000000] button-sm hover:bg-white disabled:opacity-50 whitespace-nowrap shrink-0"
+          >
+            <RefreshCw className={`w-4 h-4 ${diagLoading ? 'animate-spin' : ''}`} />
+            <span>{diagLoading ? 'Checking B2 bucket...' : 'Run B2 diagnostics'}</span>
+          </button>
+        </div>
+
+        {diagError && (
+          <div className="flex items-start gap-2.5 p-3 rounded-xl bg-[#1F1F1F] border border-red-900/60 text-red-400 caption-2">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>{diagError}</span>
+          </div>
+        )}
+
+        {diagnostics && (
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 caption-2">
+              <div className="p-3 rounded-lg bg-[#1F1F1F] border border-[#272727]">
+                <p className="text-[#737373]">Active backend</p>
+                <p className="text-white font-mono-tabular mt-0.5">
+                  {diagnostics.storageHealth.backendName}
+                </p>
+              </div>
+              <div className="p-3 rounded-lg bg-[#1F1F1F] border border-[#272727]">
+                <p className="text-[#737373]">B2 connection & bucket</p>
+                <p
+                  className={`font-mono-tabular mt-0.5 ${
+                    diagnostics.storageHealth.bucketAccessible
+                      ? 'text-emerald-400'
+                      : 'text-red-400'
+                  }`}
+                >
+                  {diagnostics.storageHealth.bucketAccessible ? 'Connected & accessible' : 'Failed'}
+                </p>
+              </div>
+              <div className="p-3 rounded-lg bg-[#1F1F1F] border border-[#272727]">
+                <p className="text-[#737373]">Verified in B2</p>
+                <p className="text-white font-mono-tabular mt-0.5">
+                  {diagnostics.summary.verifiedInB2} / {diagnostics.summary.totalVideos}
+                </p>
+              </div>
+              <div className="p-3 rounded-lg bg-[#1F1F1F] border border-[#272727]">
+                <p className="text-[#737373]">Missing from B2</p>
+                <p
+                  className={`font-mono-tabular mt-0.5 ${
+                    diagnostics.summary.missingFromB2 > 0 ? 'text-amber-400' : 'text-emerald-400'
+                  }`}
+                >
+                  {diagnostics.summary.missingFromB2}
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3 rounded-lg bg-[#1F1F1F] border border-[#272727] caption-2 text-[#A3A3A3] space-y-1">
+              <p>
+                Bucket:{' '}
+                <span className="text-white font-mono-tabular">
+                  {diagnostics.storageHealth.bucketName || 'Unset'}
+                </span>{' '}
+                · Endpoint:{' '}
+                <span className="text-white font-mono-tabular">
+                  {diagnostics.storageHealth.endpointHost || 'Unset'}
+                </span>{' '}
+                · Region:{' '}
+                <span className="text-white font-mono-tabular">
+                  {diagnostics.storageHealth.region || 'Unset'}
+                </span>
+                {diagnostics.storageHealth.regionMismatch ? (
+                  <span className="text-red-400"> (Region mismatch with endpoint!)</span>
+                ) : null}
+              </p>
+              {diagnostics.storageHealth.error && (
+                <p className="text-red-400">{diagnostics.storageHealth.error}</p>
+              )}
+            </div>
+
+            {diagnostics.videos.length > 0 && (
+              <div className="bg-[#1F1F1F] border border-[#272727] rounded-xl overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b border-[#272727] caption-4 text-[#A3A3A3]">
+                      <th className="py-2.5 px-3">Video</th>
+                      <th className="py-2.5 px-3">Queue status</th>
+                      <th className="py-2.5 px-3">B2 Object</th>
+                      <th className="py-2.5 px-3">Diagnosis</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#272727] caption-3">
+                    {diagnostics.videos.map((v) => (
+                      <tr key={v.videoId}>
+                        <td className="py-2.5 px-3">
+                          <p className="text-white truncate max-w-[200px]">{v.filename}</p>
+                          <p className="caption-5 text-[#737373] font-mono-tabular">{v.videoId}</p>
+                        </td>
+                        <td className="py-2.5 px-3 text-[#D4D4D4]">{v.status}</td>
+                        <td className="py-2.5 px-3 font-mono-tabular">
+                          {v.b2ObjectExists ? (
+                            <span className="text-emerald-400">
+                              Present ({formatBytes(v.b2ObjectSize || 0)})
+                            </span>
+                          ) : (
+                            <span className="text-red-400">Missing</span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3 text-[#A3A3A3] max-w-xs">{v.recoveryNote}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
       {/* Render Backend, Backblaze B2 & Cloudflare Cron Relay Readiness */}
       <section className="bg-[#181818] border border-[#272727] rounded-2xl p-6 space-y-4">
         <div className="flex items-center gap-2.5">
@@ -86,7 +243,10 @@ export function SettingsView({
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 caption-2">
           {[
-            { label: 'Backblaze B2 Private Bucket', ok: readiness?.b2Configured },
+            {
+              label: 'Backblaze B2 Private Bucket',
+              ok: readiness?.b2Configured && !readiness?.b2RegionMismatch,
+            },
             { label: 'Firebase Client Auth', ok: readiness?.firebaseClientConfigured },
             { label: 'Firebase Service Account', ok: readiness?.firebaseAdminConfigured },
             { label: 'Google OAuth 2.0 Client', ok: readiness?.googleOAuthConfigured },
@@ -99,7 +259,7 @@ export function SettingsView({
             >
               <span className="text-[#D4D4D4]">{item.label}</span>
               <span className={item.ok ? 'text-emerald-400' : 'text-amber-400'}>
-                {item.ok ? 'Ready' : 'Not configured'}
+                {item.ok ? 'Ready' : 'Attention needed'}
               </span>
             </div>
           ))}

@@ -120,16 +120,89 @@ export interface NotificationRecord {
 export interface EnvReadiness {
   appUrl: string;
   runtime?: string;
+  productionMode?: boolean;
   storageBackend?: string;
   firebaseProjectId: string;
   firestoreDatabaseId: string;
   storageBucket?: string;
   b2Configured?: boolean;
+  b2EndpointHost?: string;
+  b2Region?: string;
+  b2BucketName?: string;
+  b2RegionMismatch?: boolean;
   firebaseClientConfigured: boolean;
   firebaseAdminConfigured: boolean;
   googleOAuthConfigured: boolean;
   encryptionKeyConfigured: boolean;
   cronSecretConfigured: boolean;
+}
+
+export interface StorageHealthCheck {
+  backendName: 'backblaze-b2' | 'local-dev-storage';
+  connected: boolean;
+  bucketAccessible: boolean;
+  bucketName?: string;
+  endpointHost?: string;
+  region?: string;
+  regionMismatch?: boolean;
+  error: string | null;
+}
+
+export type RecoveryStatus =
+  | 'ready_in_b2'
+  | 'missing_requires_reupload'
+  | 'already_scheduled_or_published'
+  | 'storage_error';
+
+export interface VideoStorageDiagnostic {
+  videoId: string;
+  filename: string;
+  status: string;
+  errorMessage: string;
+  firestoreStoragePath: string;
+  expectedStoragePath: string;
+  storagePathMatchesExpected: boolean;
+  b2ObjectExists: boolean;
+  b2ObjectSize: number | null;
+  b2ContentType: string | null;
+  alternateKeysFound: string[];
+  recoveryStatus: RecoveryStatus;
+  recoveryNote: string;
+}
+
+export interface StorageDiagnosticsReport {
+  checkedAt: string;
+  readiness: EnvReadiness;
+  storageHealth: StorageHealthCheck;
+  summary: {
+    totalVideos: number;
+    waiting: number;
+    scheduled: number;
+    published: number;
+    failed: number;
+    verifiedInB2: number;
+    missingFromB2: number;
+    mismatchedStoragePaths: number;
+  };
+  videos: VideoStorageDiagnostic[];
+}
+
+export interface SafeRecoveryItemResult {
+  videoId: string;
+  filename: string;
+  action: 'restored_to_waiting' | 'missing_requires_reupload' | 'skipped_not_failed' | 'error';
+  storagePath: string;
+  size: number | null;
+  message: string;
+}
+
+export interface SafeRecoveryReport {
+  checkedAt: string;
+  storageBackend: string;
+  restoredCount: number;
+  missingCount: number;
+  skippedCount: number;
+  results: SafeRecoveryItemResult[];
 }
 
 export interface RefillResult {

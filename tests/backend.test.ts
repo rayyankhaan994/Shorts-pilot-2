@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import type { S3Client } from '@aws-sdk/client-s3';
 import type { ExecutionContext, ScheduledController } from '@cloudflare/workers-types';
 import { encryptSecret, toBase64Url } from '../backend/lib/crypto.ts';
 import { fromFirestoreFields, toFirestoreFields } from '../backend/lib/firestoreRest.ts';
@@ -9,6 +10,7 @@ import { createApiApp } from '../backend/routes/api.ts';
 import {
   createBackblazeB2Storage,
   createLocalDevStorage,
+  getVideoStorage,
 } from '../backend/services/b2Storage.ts';
 import { refillUserQueue } from '../backend/services/scheduler.ts';
 import cronRelayWorker, { runCronRelay } from '../shortspilot-cron-relay/src/index.ts';
@@ -149,6 +151,11 @@ async function runTests() {
         }),
         new Request('https://shortspilot.onrender.com/api/scheduler/refill', { method: 'POST' }),
         new Request('https://shortspilot.onrender.com/api/scheduler/run', { method: 'POST' }),
+        new Request('https://shortspilot.onrender.com/api/storage/diagnostics'),
+        new Request('https://shortspilot.onrender.com/api/storage/recover', {
+          method: 'POST',
+          body: '{}',
+        }),
       ]) {
         const res = await apiApp.fetch(req);
         assert.equal(res.status, 401, `Expected 401 for ${req.url}`);
@@ -245,6 +252,7 @@ async function runTests() {
 
     let youtubeUploadInitCount = 0;
     let simulateSlowUploadMs = 0;
+    let firestoreWriteCount = 0;
 
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const urlStr =
@@ -280,6 +288,7 @@ async function runTests() {
           return new Response(JSON.stringify({}), { status: 200 });
         }
         if (urlStr.endsWith(':commit')) {
+          firestoreWriteCount += 1;
           const body = JSON.parse(String(init?.body || '{}')) as {
             writes?: {
               update?: { name: string; fields?: Record<string, unknown> };
@@ -362,6 +371,7 @@ async function runTests() {
           );
         }
         if (init.method === 'PATCH') {
+          firestoreWriteCount += 1;
           const parsedBody = JSON.parse(String(init.body || '{}')) as {
             fields?: Record<string, unknown>;
           };
@@ -370,6 +380,7 @@ async function runTests() {
           return new Response(JSON.stringify({ name: relPath }), { status: 200 });
         }
         if (init.method === 'POST') {
+          firestoreWriteCount += 1;
           const parsedBody = JSON.parse(String(init.body || '{}')) as {
             fields?: Record<string, unknown>;
           };
@@ -652,6 +663,415 @@ async function runTests() {
         console.warn = origWarn;
         console.log = origLog;
       }
+    }
+
+    // Test 8: AWS SDK stream double-transformation regression guard ("The stream has already been transformed.")
+    {
+      let getObjectCalls = 0;
+      const sampleBytes = new Uint8Array([10, 20, 30, 40, 50, 60]);
+      let simulateMissingHeadOnComplete = false;
+
+      const makeSingleUseSdkBody = (bytes: Uint8Array) => {
+        let transformed = false;
+        return {
+          transformToWebStream() {
+            if (transformed) throw new Error('The stream has already been transformed.');
+            transformed = true;
+            return new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(bytes);
+                controller.close();
+              },
+            });
+          },
+          async transformToByteArray() {
+            if (transformed) throw new Error('The stream has already been transformed.');
+            transformed = true;
+            return bytes;
+          },
+        };
+      };
+
+      const fakeS3Client = {
+        async send(cmd: { constructor?: { name?: string }; input?: { Key?: string } }) {
+          const name = cmd.constructor?.name || '';
+          if (name === 'GetObjectCommand') {
+            getObjectCalls += 1;
+            return {
+              ContentLength: sampleBytes.byteLength,
+              ContentType: 'video/mp4',
+              Body: makeSingleUseSdkBody(sampleBytes),
+            };
+          }
+          if (name === 'HeadObjectCommand') {
+            if (simulateMissingHeadOnComplete) {
+              const err = Object.assign(new Error('NotFound'), {
+                name: 'NotFound',
+                $metadata: { httpStatusCode: 404 },
+              });
+              throw err;
+            }
+            return {
+              ContentLength: sampleBytes.byteLength,
+              ContentType: 'video/mp4',
+              ETag: '"abc123"',
+            };
+          }
+          if (name === 'CompleteMultipartUploadCommand') {
+            return { ETag: '"abc123"' };
+          }
+          if (name === 'ListObjectsV2Command') {
+            return {
+              Contents: [{ Key: `users/${uid}/videos/vid_stream_test/original.mp4`, Size: 6 }],
+            };
+          }
+          return {};
+        },
+      } as unknown as S3Client;
+
+      const b2Mocked = createBackblazeB2Storage({
+        client: fakeS3Client,
+        bucketName: 'shortspilot-private-test',
+        endpointHost: 's3.us-west-004.backblazeb2.com',
+        region: 'us-west-004',
+        regionMismatch: false,
+      });
+
+      // 8a. get() -> arrayBuffer() must NOT trigger transformToWebStream() first
+      const obj1 = await b2Mocked.get(`users/${uid}/videos/vid_stream_test/original.mp4`);
+      assert.ok(obj1);
+      const ab1 = await obj1.arrayBuffer();
+      const ab2 = await obj1.arrayBuffer();
+      assert.equal(ab1.byteLength, 6);
+      assert.equal(ab2.byteLength, 6);
+      assert.equal(getObjectCalls, 1);
+
+      // 8b. Reading .body after arrayBuffer() opens a fresh B2 GetObject rather than crashing
+      const readerAfterAb = obj1.body.getReader();
+      const read1 = await readerAfterAb.read();
+      assert.equal(read1.done, false);
+      assert.equal(read1.value?.byteLength, 6);
+      assert.equal(getObjectCalls, 2);
+
+      // 8c. Reading .body first then arrayBuffer() also opens a fresh B2 GetObject cleanly
+      const obj2 = await b2Mocked.get(`users/${uid}/videos/vid_stream_test/original.mp4`);
+      assert.ok(obj2);
+      const readerFirst = obj2.body.getReader();
+      const readFirst = await readerFirst.read();
+      assert.equal(readFirst.value?.byteLength, 6);
+      const abAfterBody = await obj2.arrayBuffer();
+      assert.equal(abAfterBody.byteLength, 6);
+      assert.equal(getObjectCalls, 4);
+
+      // 8d. completeMultipartUpload rejects when HeadObject verification returns 404
+      simulateMissingHeadOnComplete = true;
+      await assert.rejects(
+        () =>
+          b2Mocked.completeMultipartUpload('users/u/videos/v/original.mp4', 'up1', [
+            { partNumber: 1, etag: '"e1"' },
+          ]),
+        /verification failed/i
+      );
+
+      // 8e. checkHealth succeeds cleanly
+      const health = await b2Mocked.checkHealth?.();
+      assert.equal(health?.connected, true);
+      assert.equal(health?.bucketAccessible, true);
+    }
+
+    // Test 9: Production mode refuses silent .dev-storage fallback when B2_* vars are unset
+    {
+      const savedNodeEnv = process.env.NODE_ENV;
+      const savedB2Key = process.env.B2_KEY_ID;
+      process.env.NODE_ENV = 'production';
+      process.env.B2_KEY_ID = '';
+      try {
+        assert.throws(() => getVideoStorage(), /Backblaze B2 is not configured in production/i);
+      } finally {
+        process.env.NODE_ENV = savedNodeEnv;
+        process.env.B2_KEY_ID = savedB2Key;
+      }
+    }
+
+    // Test 10: Upload completion enforces size match against HeadObject (returns 502 on mismatch)
+    {
+      const videoId = 'vid_size_mismatch';
+      const initRes = await apiApp.fetch(
+        new Request('https://shortspilot.onrender.com/api/storage/uploads/init', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify({
+            videoId,
+            filename: 'mismatch.mp4',
+            fileSize: 512,
+            mimeType: 'video/mp4',
+          }),
+        })
+      );
+      const initJson = (await initRes.json()) as { uploadId: string };
+      const partRes = await apiApp.fetch(
+        new Request(
+          `https://shortspilot.onrender.com/api/storage/uploads/${videoId}/part?uploadId=${encodeURIComponent(
+            initJson.uploadId
+          )}&partNumber=1`,
+          {
+            method: 'PUT',
+            headers: { Authorization: `Bearer ${idToken}` },
+            body: new Uint8Array(256).fill(1),
+          }
+        )
+      );
+      const partJson = (await partRes.json()) as { partNumber: number; etag: string };
+
+      const badComplete = await apiApp.fetch(
+        new Request(`https://shortspilot.onrender.com/api/storage/uploads/${videoId}/complete`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify({
+            uploadId: initJson.uploadId,
+            expectedFileSize: 512,
+            parts: [partJson],
+          }),
+        })
+      );
+      assert.equal(badComplete.status, 502);
+      const badJson = (await badComplete.json()) as { verified: boolean; error: string };
+      assert.equal(badJson.verified, false);
+      assert.match(badJson.error, /size mismatch/i);
+    }
+
+    // Test 11: Authenticated B2 diagnostics & safe non-destructive recovery (never calls YouTube!)
+    {
+      // Seed 1 failed video missing in B2, 1 failed video present in B2 (recovering from stream bug), and 1 intact Waiting video
+      docs.set('videos/vid_missing_b2', {
+        userId: uid,
+        storagePath: `users/${uid}/videos/vid_missing_b2/original.mp4`,
+        filename: 'missing_clip.mp4',
+        mimeType: 'video/mp4',
+        title: 'Missing clip',
+        description: '',
+        hashtags: '#shorts',
+        queueOrder: 10,
+        status: 'Failed',
+        errorMessage: 'Source video file is missing from B2 storage',
+        retryCount: 3,
+      });
+      docs.set('videos/vid_stream_failed', {
+        userId: uid,
+        storagePath: `users/${uid}/videos/vid_stream_failed/original.mp4`,
+        filename: 'recoverable_clip.mp4',
+        mimeType: 'video/mp4',
+        title: 'Stream error clip',
+        description: '',
+        hashtags: '#shorts',
+        queueOrder: 11,
+        status: 'Failed',
+        errorMessage: 'The stream has already been transformed.',
+        retryCount: 3,
+      });
+      await storage.put(
+        `users/${uid}/videos/vid_stream_failed/original.mp4`,
+        new Uint8Array(2048).fill(5)
+      );
+      docs.set('videos/vid_waiting_intact', {
+        userId: uid,
+        storagePath: `users/${uid}/videos/vid_waiting_intact/original.mp4`,
+        filename: 'lv_0_waiting_intact.mp4',
+        mimeType: 'video/mp4',
+        title: 'Intact waiting clip',
+        description: '',
+        hashtags: '#shorts',
+        queueOrder: 12,
+        status: 'Waiting',
+        retryCount: 0,
+      });
+      await storage.put(
+        `users/${uid}/videos/vid_waiting_intact/original.mp4`,
+        new Uint8Array(2048).fill(6)
+      );
+
+      const diagRes = await apiApp.fetch(
+        new Request('https://shortspilot.onrender.com/api/storage/diagnostics', {
+          headers: { Authorization: `Bearer ${idToken}` },
+        })
+      );
+      assert.equal(diagRes.status, 200);
+      const diagText = await diagRes.text();
+      assert.equal(diagText.includes(process.env.B2_KEY_ID!), false, 'Must never leak B2_KEY_ID');
+      assert.equal(
+        diagText.includes(process.env.B2_APPLICATION_KEY!),
+        false,
+        'Must never leak B2_APPLICATION_KEY'
+      );
+
+      const diagJson = JSON.parse(diagText) as {
+        videos: { videoId: string; b2ObjectExists: boolean; recoveryStatus: string }[];
+      };
+      const missingDiag = diagJson.videos.find((v) => v.videoId === 'vid_missing_b2');
+      const streamDiag = diagJson.videos.find((v) => v.videoId === 'vid_stream_failed');
+      assert.equal(missingDiag?.b2ObjectExists, false);
+      assert.equal(missingDiag?.recoveryStatus, 'missing_requires_reupload');
+      assert.equal(streamDiag?.b2ObjectExists, true);
+      assert.equal(streamDiag?.recoveryStatus, 'ready_in_b2');
+
+      const uploadsBeforeRecover = youtubeUploadInitCount;
+      const recoverRes = await apiApp.fetch(
+        new Request('https://shortspilot.onrender.com/api/storage/recover', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: '{}',
+        })
+      );
+      assert.equal(recoverRes.status, 200);
+      const recoverJson = (await recoverRes.json()) as {
+        restoredCount: number;
+        missingCount: number;
+      };
+      assert.equal(recoverJson.restoredCount, 1);
+      assert.equal(recoverJson.missingCount, 1);
+      // Must NEVER publish or trigger YouTube during recovery
+      assert.equal(youtubeUploadInitCount, uploadsBeforeRecover);
+
+      // Stream-failed video was verified in B2 and restored to Waiting with retryCount reset
+      assert.equal(docs.get('videos/vid_stream_failed')?.status, 'Waiting');
+      assert.equal(docs.get('videos/vid_stream_failed')?.retryCount, 0);
+      // Missing video stays Failed (never falsely marked Waiting)
+      assert.equal(docs.get('videos/vid_missing_b2')?.status, 'Failed');
+      // Existing Waiting video stays untouched
+      assert.equal(docs.get('videos/vid_waiting_intact')?.status, 'Waiting');
+    }
+
+    // Test 12: Queue eligibility & transient B2 outage protection
+    {
+      // Move recovered video back to Waiting queue and inject a transient B2 503 storage wrapper
+      const transientStorage = {
+        ...storage,
+        async head() {
+          const err = Object.assign(new Error('ServiceUnavailable'), {
+            name: 'ServiceUnavailable',
+            $metadata: { httpStatusCode: 503 },
+          });
+          throw err;
+        },
+      };
+
+      const uploadsBeforeTransient = youtubeUploadInitCount;
+      const transientRes = await refillUserQueue(uid, {
+        ignoreAutomationPause: true,
+        storage: transientStorage,
+      });
+      assert.equal(transientRes.newlyScheduled, 0);
+      assert.equal(youtubeUploadInitCount, uploadsBeforeTransient);
+      // Both Waiting videos remain Waiting with retryCount=0 (no permanent corruption!)
+      assert.equal(docs.get('videos/vid_waiting_intact')?.status, 'Waiting');
+      assert.equal(docs.get('videos/vid_waiting_intact')?.retryCount, 0);
+      assert.equal(docs.get('videos/vid_stream_failed')?.status, 'Waiting');
+      assert.equal(docs.get('videos/vid_stream_failed')?.retryCount, 0);
+
+      // Now test missing-object Waiting item in front of valid Waiting items:
+      docs.set('videos/vid_missing_waiting', {
+        userId: uid,
+        storagePath: `users/${uid}/videos/vid_missing_waiting/original.mp4`,
+        filename: 'ghost_file.mp4',
+        mimeType: 'video/mp4',
+        title: 'Ghost',
+        description: '',
+        hashtags: '#shorts',
+        queueOrder: 0,
+        status: 'Waiting',
+        retryCount: 0,
+      });
+
+      const selectiveRes = await refillUserQueue(uid, {
+        ignoreAutomationPause: true,
+        storage,
+      });
+      // Missing file must NEVER be scheduled and must be marked Failed, while valid verified videos proceed cleanly
+      assert.equal(docs.get('videos/vid_missing_waiting')?.status, 'Failed');
+      assert.equal(selectiveRes.newlyScheduled, 2);
+      assert.equal(docs.get('videos/vid_stream_failed')?.status, 'Scheduled');
+      assert.equal(docs.get('videos/vid_waiting_intact')?.status, 'Scheduled');
+    }
+
+    // Test 13: recoverFailedVideosSafely MUST ONLY touch status === 'Failed' and perform zero Firestore writes for any other status
+    {
+      const nonFailedCases: { id: string; status?: string; putInB2: boolean }[] = [
+        { id: 'vid_nonfailed_uploaded_b2', status: 'Uploaded', putInB2: true },
+        { id: 'vid_nonfailed_uploaded_missing', status: 'Uploaded', putInB2: false },
+        { id: 'vid_nonfailed_unknown', status: 'DraftCustom', putInB2: true },
+        { id: 'vid_nonfailed_missing_status', status: undefined, putInB2: false },
+        { id: 'vid_nonfailed_waiting', status: 'Waiting', putInB2: true },
+        { id: 'vid_nonfailed_processing', status: 'Processing', putInB2: true },
+        { id: 'vid_nonfailed_scheduled', status: 'Scheduled', putInB2: true },
+        { id: 'vid_nonfailed_published', status: 'Published', putInB2: true },
+      ];
+
+      const snapshotsBefore = new Map<string, string>();
+      for (const item of nonFailedCases) {
+        const key = `users/${uid}/videos/${item.id}/original.mp4`;
+        const docData: Record<string, unknown> = {
+          userId: uid,
+          storagePath: key,
+          filename: `${item.id}.mp4`,
+          mimeType: 'video/mp4',
+          title: item.id,
+          errorMessage: 'preserved-marker',
+          retryCount: 2,
+          ...(item.status !== undefined ? { status: item.status } : {}),
+        };
+        docs.set(`videos/${item.id}`, docData);
+        snapshotsBefore.set(`videos/${item.id}`, JSON.stringify(docData));
+        if (item.putInB2) {
+          await storage.put(key, new Uint8Array(1024).fill(9));
+        }
+      }
+
+      const writesBeforeTargeted = firestoreWriteCount;
+      const targetedRecover = await apiApp.fetch(
+        new Request('https://shortspilot.onrender.com/api/storage/recover', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify({
+            videoIds: nonFailedCases.map((c) => c.id),
+          }),
+        })
+      );
+      assert.equal(targetedRecover.status, 200);
+      const targetedJson = (await targetedRecover.json()) as {
+        restoredCount: number;
+        missingCount: number;
+        skippedCount: number;
+        results: { videoId: string; action: string }[];
+      };
+      assert.equal(targetedJson.restoredCount, 0);
+      assert.equal(targetedJson.missingCount, 0);
+      assert.equal(targetedJson.skippedCount, nonFailedCases.length);
+      for (const item of nonFailedCases) {
+        const r = targetedJson.results.find((res) => res.videoId === item.id);
+        assert.equal(r?.action, 'skipped_not_failed', `Expected skipped_not_failed for ${item.id}`);
+        assert.equal(
+          JSON.stringify(docs.get(`videos/${item.id}`)),
+          snapshotsBefore.get(`videos/${item.id}`),
+          `Expected zero mutations on non-Failed record ${item.id}`
+        );
+      }
+      assert.equal(
+        firestoreWriteCount,
+        writesBeforeTargeted,
+        'Expected zero Firestore writes when recovering non-Failed records'
+      );
     }
   } finally {
     globalThis.fetch = originalFetch;

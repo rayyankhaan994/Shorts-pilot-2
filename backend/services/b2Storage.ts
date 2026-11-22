@@ -7,15 +7,18 @@ import {
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
   UploadPartCommand,
 } from '@aws-sdk/client-s3';
-import { getB2Config } from '../config.ts';
+import { getB2Config, isProductionRuntime } from '../config.ts';
 import type {
+  StorageHealthCheck,
   StorageMultipartPart,
   StorageObjectBody,
   StorageObjectHead,
+  StorageObjectListItem,
   VideoStorageAdapter,
 } from '../types.ts';
 
@@ -34,8 +37,73 @@ function isS3NotFound(err: unknown): boolean {
   );
 }
 
+export function isTransientStorageError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') {
+    const msg = String(err || '').toLowerCase();
+    return (
+      msg.includes('timeout') ||
+      msg.includes('timed out') ||
+      msg.includes('econnreset') ||
+      msg.includes('etimedout') ||
+      msg.includes('socket hang up') ||
+      msg.includes('fetch failed')
+    );
+  }
+  if (isS3NotFound(err)) return false;
+
+  const e = err as {
+    name?: string;
+    code?: string;
+    Code?: string;
+    message?: string;
+    $metadata?: { httpStatusCode?: number };
+  };
+  const status = e.$metadata?.httpStatusCode;
+  if (status === 429 || (typeof status === 'number' && status >= 500)) {
+    return true;
+  }
+
+  const codeOrName = `${e.name || ''} ${e.code || ''} ${e.Code || ''}`.toLowerCase();
+  const msg = String(e.message || '').toLowerCase();
+
+  if (
+    codeOrName.includes('timeout') ||
+    codeOrName.includes('networking') ||
+    codeOrName.includes('slowdown') ||
+    codeOrName.includes('serviceunavailable') ||
+    codeOrName.includes('internalerror') ||
+    codeOrName.includes('aborterror')
+  ) {
+    return true;
+  }
+
+  return (
+    msg.includes('econnreset') ||
+    msg.includes('etimedout') ||
+    msg.includes('eai_again') ||
+    msg.includes('econnrefused') ||
+    msg.includes('socket hang up') ||
+    msg.includes('fetch failed') ||
+    msg.includes('temporarily unavailable') ||
+    msg.includes('service unavailable') ||
+    msg.includes('slow down')
+  );
+}
+
+function sanitizeStorageErrorMessage(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err || 'Unknown storage error');
+  return raw
+    .replace(/Authorization:\s*[^\s]+/gi, 'Authorization: [REDACTED]')
+    .replace(/Signature=[a-zA-Z0-9%+/=_-]+/gi, 'Signature=[REDACTED]')
+    .replace(/Credential=[^&\s]+/gi, 'Credential=[REDACTED]')
+    .slice(0, 300);
+}
+
 function toWebReadable(body: unknown): ReadableStream<Uint8Array> {
-  if (body && typeof (body as { transformToWebStream?: () => unknown }).transformToWebStream === 'function') {
+  if (
+    body &&
+    typeof (body as { transformToWebStream?: () => unknown }).transformToWebStream === 'function'
+  ) {
     return (body as { transformToWebStream: () => ReadableStream<Uint8Array> }).transformToWebStream();
   }
   if (body instanceof ReadableStream) {
@@ -45,7 +113,11 @@ function toWebReadable(body: unknown): ReadableStream<Uint8Array> {
 }
 
 async function bodyToUint8Array(body: unknown): Promise<Uint8Array> {
-  if (body && typeof (body as { transformToByteArray?: () => Promise<Uint8Array> }).transformToByteArray === 'function') {
+  if (
+    body &&
+    typeof (body as { transformToByteArray?: () => Promise<Uint8Array> }).transformToByteArray ===
+      'function'
+  ) {
     return (body as { transformToByteArray: () => Promise<Uint8Array> }).transformToByteArray();
   }
   const stream = toWebReadable(body);
@@ -69,27 +141,52 @@ async function bodyToUint8Array(body: unknown): Promise<Uint8Array> {
   return merged;
 }
 
-export function createBackblazeB2Storage(): VideoStorageAdapter {
+function cloneArrayBuffer(buf: ArrayBuffer): ArrayBuffer {
+  return buf.slice(0);
+}
+
+export function createBackblazeB2Storage(options?: {
+  client?: S3Client;
+  bucketName?: string;
+  endpointHost?: string;
+  region?: string;
+  regionMismatch?: boolean;
+}): VideoStorageAdapter {
   const cfg = getB2Config();
-  if (!cfg.configured) {
+  if (!options?.client && !cfg.configured) {
     throw new Error(
       'Backblaze B2 credentials (B2_ENDPOINT, B2_BUCKET_NAME, B2_KEY_ID, B2_APPLICATION_KEY) are not configured.'
     );
   }
 
-  const client = new S3Client({
-    endpoint: cfg.endpoint,
-    region: cfg.region,
-    credentials: {
-      accessKeyId: cfg.keyId,
-      secretAccessKey: cfg.applicationKey,
-    },
-    forcePathStyle: true,
-    requestChecksumCalculation: 'WHEN_REQUIRED',
-    responseChecksumValidation: 'WHEN_REQUIRED',
-  });
+  const client =
+    options?.client ||
+    new S3Client({
+      endpoint: cfg.endpoint,
+      region: cfg.region,
+      credentials: {
+        accessKeyId: cfg.keyId,
+        secretAccessKey: cfg.applicationKey,
+      },
+      forcePathStyle: true,
+      requestChecksumCalculation: 'WHEN_REQUIRED',
+      responseChecksumValidation: 'WHEN_REQUIRED',
+    });
 
-  const Bucket = cfg.bucketName;
+  const Bucket = options?.bucketName || cfg.bucketName;
+  const endpointHost = options?.endpointHost || cfg.endpointHost;
+  const region = options?.region || cfg.region;
+  const regionMismatch = options?.regionMismatch ?? cfg.regionMismatch;
+
+  async function fetchFreshGetResponse(key: string, rangeStr?: string) {
+    return client.send(
+      new GetObjectCommand({
+        Bucket,
+        Key: key,
+        ...(rangeStr ? { Range: rangeStr } : {}),
+      })
+    );
+  }
 
   const adapter: VideoStorageAdapter = {
     backendName: 'backblaze-b2',
@@ -113,37 +210,106 @@ export function createBackblazeB2Storage(): VideoStorageAdapter {
 
     async get(
       key: string,
-      options?: { range?: { offset: number; length: number } }
+      getOptions?: { range?: { offset: number; length: number } }
     ): Promise<StorageObjectBody | null> {
       try {
-        const rangeStr = options?.range
-          ? `bytes=${options.range.offset}-${options.range.offset + options.range.length - 1}`
+        const rangeStr = getOptions?.range
+          ? `bytes=${getOptions.range.offset}-${getOptions.range.offset + getOptions.range.length - 1}`
           : undefined;
-        const res = await client.send(
-          new GetObjectCommand({
-            Bucket,
-            Key: key,
-            ...(rangeStr ? { Range: rangeStr } : {}),
-          })
-        );
-        if (!res.Body) return null;
+        const initialRes = await fetchFreshGetResponse(key, rangeStr);
+        if (!initialRes.Body) return null;
 
-        let totalSize = Number(res.ContentLength || 0);
-        if (res.ContentRange) {
-          const m = /\/(\d+)$/.exec(res.ContentRange);
+        let totalSize = Number(initialRes.ContentLength || 0);
+        if (initialRes.ContentRange) {
+          const m = /\/(\d+)$/.exec(initialRes.ContentRange);
           if (m) totalSize = Number(m[1]);
         }
 
-        return {
+        // Track single-use consumption on initialRes.Body so the same AWS SDK stream
+        // is never transformed twice ("The stream has already been transformed.").
+        let initialBodyUsed = false;
+        let cachedArrayBufferPromise: Promise<ArrayBuffer> | null = null;
+
+        const storageBody: StorageObjectBody = {
           key,
           size: totalSize,
-          contentType: res.ContentType,
-          body: toWebReadable(res.Body),
-          async arrayBuffer() {
-            const bytes = await bodyToUint8Array(res.Body);
-            return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+          contentType: initialRes.ContentType,
+
+          get body(): ReadableStream<Uint8Array> {
+            if (!initialBodyUsed) {
+              initialBodyUsed = true;
+              return toWebReadable(initialRes.Body);
+            }
+
+            // Subsequent stream read opens a fresh B2 GetObject request transparently.
+            let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+            return new ReadableStream<Uint8Array>({
+              async start() {
+                const fresh = await fetchFreshGetResponse(key, rangeStr);
+                if (!fresh.Body) {
+                  throw new Error(`Backblaze B2 object missing during stream read (${key}).`);
+                }
+                activeReader = toWebReadable(fresh.Body).getReader();
+              },
+              async pull(controller) {
+                if (!activeReader) {
+                  controller.close();
+                  return;
+                }
+                const { done, value } = await activeReader.read();
+                if (done) {
+                  controller.close();
+                  return;
+                }
+                if (value) controller.enqueue(value);
+              },
+              async cancel(reason) {
+                if (activeReader) {
+                  await activeReader.cancel(reason).catch(() => {});
+                }
+              },
+            });
+          },
+
+          async arrayBuffer(): Promise<ArrayBuffer> {
+            if (cachedArrayBufferPromise) {
+              const buf = await cachedArrayBufferPromise;
+              return cloneArrayBuffer(buf);
+            }
+
+            const readTask = (async () => {
+              let sourceBody = initialRes.Body;
+              if (initialBodyUsed) {
+                // initialRes.Body was already consumed via .body; open a fresh B2 request.
+                const fresh = await fetchFreshGetResponse(key, rangeStr);
+                if (!fresh.Body) {
+                  throw new Error(`Backblaze B2 object missing during buffered read (${key}).`);
+                }
+                sourceBody = fresh.Body;
+              } else {
+                initialBodyUsed = true;
+              }
+
+              const bytes = await bodyToUint8Array(sourceBody);
+              return bytes.buffer.slice(
+                bytes.byteOffset,
+                bytes.byteOffset + bytes.byteLength
+              ) as ArrayBuffer;
+            })();
+
+            cachedArrayBufferPromise = readTask;
+            try {
+              const buf = await readTask;
+              return cloneArrayBuffer(buf);
+            } catch (err) {
+              // Do not cache failed reads so callers can retry cleanly
+              cachedArrayBufferPromise = null;
+              throw err;
+            }
           },
         };
+
+        return storageBody;
       } catch (err) {
         if (isS3NotFound(err)) return null;
         throw err;
@@ -179,16 +345,65 @@ export function createBackblazeB2Storage(): VideoStorageAdapter {
       await client.send(new DeleteObjectCommand({ Bucket, Key: key }));
     },
 
+    async listPrefix(prefix: string, maxKeys = 25): Promise<StorageObjectListItem[]> {
+      const res = await client.send(
+        new ListObjectsV2Command({
+          Bucket,
+          Prefix: prefix,
+          MaxKeys: maxKeys,
+        })
+      );
+      return (res.Contents || [])
+        .filter((item): item is { Key: string; Size?: number } => Boolean(item.Key))
+        .map((item) => ({
+          key: item.Key,
+          size: Number(item.Size || 0),
+        }));
+    },
+
+    async checkHealth(): Promise<StorageHealthCheck> {
+      try {
+        await client.send(
+          new ListObjectsV2Command({
+            Bucket,
+            MaxKeys: 1,
+          })
+        );
+        return {
+          backendName: 'backblaze-b2',
+          connected: true,
+          bucketAccessible: true,
+          bucketName: Bucket,
+          endpointHost,
+          region,
+          regionMismatch,
+          error: null,
+        };
+      } catch (err) {
+        const msg = sanitizeStorageErrorMessage(err);
+        return {
+          backendName: 'backblaze-b2',
+          connected: false,
+          bucketAccessible: false,
+          bucketName: Bucket,
+          endpointHost,
+          region,
+          regionMismatch,
+          error: msg,
+        };
+      }
+    },
+
     async createMultipartUpload(
       key: string,
-      options?: { contentType?: string; metadata?: Record<string, string> }
+      uploadOptions?: { contentType?: string; metadata?: Record<string, string> }
     ): Promise<{ uploadId: string }> {
       const res = await client.send(
         new CreateMultipartUploadCommand({
           Bucket,
           Key: key,
-          ContentType: options?.contentType || 'video/mp4',
-          Metadata: options?.metadata,
+          ContentType: uploadOptions?.contentType || 'video/mp4',
+          Metadata: uploadOptions?.metadata,
         })
       );
       if (!res.UploadId) {
@@ -245,11 +460,17 @@ export function createBackblazeB2Storage(): VideoStorageAdapter {
       );
 
       const head = await adapter.head(key);
+      if (!head || head.size <= 0) {
+        throw new Error(
+          `Backblaze B2 verification failed after multipart upload completion: object missing or empty (${key}).`
+        );
+      }
+
       return {
         key,
-        size: head?.size ?? 0,
-        etag: res.ETag?.replace(/"/g, '') || head?.etag,
-        contentType: head?.contentType,
+        size: head.size,
+        etag: res.ETag?.replace(/"/g, '') || head.etag,
+        contentType: head.contentType,
       };
     },
 
@@ -268,7 +489,7 @@ export function createBackblazeB2Storage(): VideoStorageAdapter {
 }
 
 /**
- * Local filesystem fallback storage adapter used ONLY in AI Studio preview or automated tests
+ * Local filesystem fallback storage adapter used ONLY in non-production preview or automated tests
  * when Backblaze B2 credentials are not set in process.env.
  */
 export function createLocalDevStorage(
@@ -314,13 +535,13 @@ export function createLocalDevStorage(
 
     async get(
       key: string,
-      options?: { range?: { offset: number; length: number } }
+      getOptions?: { range?: { offset: number; length: number } }
     ): Promise<StorageObjectBody | null> {
       const p = resolveKeyPath(key);
       if (!fs.existsSync(p)) return null;
       const full = fs.readFileSync(p);
-      const offset = options?.range?.offset ?? 0;
-      const length = options?.range?.length ?? full.byteLength - offset;
+      const offset = getOptions?.range?.offset ?? 0;
+      const length = getOptions?.range?.length ?? full.byteLength - offset;
       const slice = full.subarray(offset, offset + length);
       const mp = resolveMetaPath(key);
       const meta = fs.existsSync(mp)
@@ -331,12 +552,15 @@ export function createLocalDevStorage(
         key,
         size: full.byteLength,
         contentType: meta.contentType || 'video/mp4',
-        body: new ReadableStream({
-          start(controller) {
-            controller.enqueue(arr);
-            controller.close();
-          },
-        }),
+        get body() {
+          const copy = Uint8Array.from(arr);
+          return new ReadableStream({
+            start(controller) {
+              controller.enqueue(copy);
+              controller.close();
+            },
+          });
+        },
         async arrayBuffer() {
           return arr.buffer.slice(arr.byteOffset, arr.byteOffset + arr.byteLength);
         },
@@ -366,14 +590,48 @@ export function createLocalDevStorage(
       if (fs.existsSync(mp)) fs.rmSync(mp);
     },
 
+    async listPrefix(prefix: string, maxKeys = 25): Promise<StorageObjectListItem[]> {
+      const results: StorageObjectListItem[] = [];
+      const walk = (dir: string) => {
+        if (results.length >= maxKeys || !fs.existsSync(dir)) return;
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name);
+          if (entry.name === '_multipart') continue;
+          if (entry.isDirectory()) {
+            walk(full);
+          } else if (!entry.name.endsWith('.meta.json')) {
+            const rel = path.relative(rootDir, full).replace(/\\/g, '/');
+            if (rel.startsWith(prefix)) {
+              results.push({ key: rel, size: fs.statSync(full).size });
+              if (results.length >= maxKeys) return;
+            }
+          }
+        }
+      };
+      walk(rootDir);
+      return results;
+    },
+
+    async checkHealth(): Promise<StorageHealthCheck> {
+      return {
+        backendName: 'local-dev-storage',
+        connected: false,
+        bucketAccessible: false,
+        error: 'Backblaze B2 credentials are not set; using local preview storage.',
+      };
+    },
+
     async createMultipartUpload(
       key: string,
-      options?: { contentType?: string; metadata?: Record<string, string> }
+      uploadOptions?: { contentType?: string; metadata?: Record<string, string> }
     ): Promise<{ uploadId: string }> {
       const uploadId = `b2dev_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const upDir = path.join(partsRoot, uploadId);
       fs.mkdirSync(upDir, { recursive: true });
-      fs.writeFileSync(path.join(upDir, 'meta.json'), JSON.stringify({ key, ...(options || {}) }));
+      fs.writeFileSync(
+        path.join(upDir, 'meta.json'),
+        JSON.stringify({ key, ...(uploadOptions || {}) })
+      );
       return { uploadId };
     },
 
@@ -399,6 +657,9 @@ export function createLocalDevStorage(
       const sorted = [...parts].sort((a, b) => a.partNumber - b.partNumber);
       const chunks = sorted.map((p) => fs.readFileSync(path.join(upDir, `part_${p.partNumber}`)));
       const merged = Buffer.concat(chunks);
+      if (merged.byteLength <= 0) {
+        throw new Error(`Completed multipart upload is empty (${key}).`);
+      }
       const dest = resolveKeyPath(key);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.writeFileSync(dest, merged);
@@ -434,10 +695,16 @@ export function getVideoStorage(): VideoStorageAdapter {
     return cachedB2Adapter;
   }
 
+  if (isProductionRuntime()) {
+    throw new Error(
+      'Backblaze B2 is not configured in production. Set B2_ENDPOINT, B2_REGION, B2_BUCKET_NAME, B2_KEY_ID, and B2_APPLICATION_KEY in Render Environment.'
+    );
+  }
+
   if (!warnedLocalStorage) {
     warnedLocalStorage = true;
     console.warn(
-      '[ShortsPilot] Backblaze B2 env vars not set; using local .dev-storage fallback for preview.'
+      '[ShortsPilot] Backblaze B2 env vars not set; using local .dev-storage fallback for local preview.'
     );
   }
   return createLocalDevStorage();
