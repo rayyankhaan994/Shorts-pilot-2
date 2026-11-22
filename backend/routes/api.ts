@@ -27,6 +27,16 @@ const MAX_VIDEO_SIZE_BYTES = 256 * 1024 * 1024;
 const ALLOWED_VIDEO_TYPES = new Set(['video/mp4', 'video/quicktime', 'video/webm']);
 const MULTIPART_CHUNK_SIZE = 5 * 1024 * 1024; // 5 MiB S3/B2 minimum part size
 
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>\"']/g, (char) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '\"': '&quot;',
+    "'": '&#39;',
+  })[char] || char);
+}
+
 function buildVideoKey(uid: string, videoId: string): string {
   return `users/${uid}/videos/${videoId}/original.mp4`;
 }
@@ -117,10 +127,11 @@ export function createApiApp(options: { getStorage?: () => VideoStorageAdapter }
     <script>
       if (window.opener) {
         window.opener.postMessage({ type: 'OAUTH_AUTH_ERROR', error: ${safeErrorJson} }, '*');
-        window.close();
       }
     </script>
-    <p>YouTube authorization was cancelled or denied. You may close this window.</p>
+    <h2>YouTube authorization was not completed</h2>
+    <p>${escapeHtml(oauthError)}</p>
+    <p>You can close this window and try again.</p>
   </body>
 </html>`,
         400
@@ -142,10 +153,11 @@ export function createApiApp(options: { getStorage?: () => VideoStorageAdapter }
     <script>
       if (window.opener) {
         window.opener.postMessage({ type: 'OAUTH_AUTH_ERROR', error: ${safeErrorJson} }, '*');
-        window.close();
       }
     </script>
-    <p>Server-side Firebase service account secrets are not configured yet.</p>
+    <h2>YouTube connection could not be saved</h2>
+    <p>Firebase service account secrets are not configured on the server.</p>
+    <p>Set FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY in Render, then retry.</p>
   </body>
 </html>`,
         503
@@ -181,10 +193,11 @@ export function createApiApp(options: { getStorage?: () => VideoStorageAdapter }
     <script>
       if (window.opener) {
         window.opener.postMessage({ type: 'OAUTH_AUTH_ERROR', error: ${safeErrorJson} }, '*');
-        window.close();
       }
     </script>
-    <p>Failed to connect YouTube channel. Please close this window and retry.</p>
+    <h2>Failed to connect YouTube channel</h2>
+    <p>${escapeHtml(msg)}</p>
+    <p>You can close this window and retry after fixing the issue.</p>
   </body>
 </html>`,
         500
