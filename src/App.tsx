@@ -35,6 +35,7 @@ function ShortsPilotApp() {
   const [refilling, setRefilling] = useState(false);
   const [refillResult, setRefillResult] = useState<RefillResult | null>(null);
   const [refillError, setRefillError] = useState('');
+  const [youtubeOAuthError, setYoutubeOAuthError] = useState('');
 
   const handleManualRefill = useCallback(async () => {
     setRefilling(true);
@@ -53,18 +54,15 @@ function ShortsPilotApp() {
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       const origin = event.origin;
-      if (
-        !origin.endsWith('.run.app') &&
-        !origin.endsWith('.onrender.com') &&
-        !origin.includes('localhost') &&
-        !origin.includes('127.0.0.1')
-      ) {
+      if (origin !== window.location.origin) {
         return;
       }
       if (event.data?.type === 'OAUTH_AUTH_SUCCESS') {
+        setYoutubeOAuthError('');
         void data.fetchReadiness();
       } else if (event.data?.type === 'OAUTH_AUTH_ERROR' && event.data?.error) {
-        setRefillError(String(event.data.error));
+        setYoutubeOAuthError(String(event.data.error));
+        setActiveTab('youtube');
       }
     };
     window.addEventListener('message', onMessage);
@@ -185,6 +183,7 @@ function ShortsPilotApp() {
           <YouTubeChannelView
             channel={data.channel}
             readiness={data.readiness}
+            oauthError={youtubeOAuthError}
             timezone={timezone}
             onConnect={data.connectYouTubeChannel}
             onDisconnect={data.disconnectYouTubeChannel}
