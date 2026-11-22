@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "white-darkness-90b9",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-02-14",
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+  "vars": {
+    "RENDER_APP_URL": "https://shorts-pilot-2.onrender.com"
+  },
+  "observability": {
+    "enabled": true
+  }
+}
